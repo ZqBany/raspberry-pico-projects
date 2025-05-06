@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <limits.h>
 #include <algorithm>
 #include <cmath>
@@ -78,25 +79,25 @@ class QTRDecoder {
             sleep_ms(5);
         }
         
-        void _reset_led() {
+        void reset_led() {
             log_message(LOG_LEVEL_TRACE, "reset led");
             gpio_put(control_pin, false);
             sleep_us(1200);  // Note that turning the LEDs off with a >1 ms pulse and then back on resets them to full current.
         }
         
-        void _led_off() {
+        void led_off() {
             log_message(LOG_LEVEL_TRACE, "led off");
             last_led_off_us = time_us_32();
             gpio_put(control_pin, false);
         }
         
-        uint32_t _led_on_level(uint8_t level) {
+        uint32_t led_on_level(uint8_t level) {
             if (gpio_get(control_pin)) {
                 // We are turning on dimmable emitters that are already on. To avoid messing
                 // up the dimming level, we have to turn the emitters off and back on. This
                 // means the turn-off delay will happen even if wait = false was passed to
                 // emittersOn(). (Driver min is 1 ms.)
-                _reset_led();
+                reset_led();
             }
             level = MAX(0, MIN(31, level));  // Lowest brightness at 31 level
             uint32_t status = save_and_disable_interrupts();
@@ -114,13 +115,13 @@ class QTRDecoder {
             return led_on_start;
         }
         
-        void _led_on() {
+        void led_on() {
             if (false && time_us_32() - last_led_off_us <= 900) {
                 log_message(LOG_LEVEL_TRACE, "led on via pin");
                 gpio_put(control_pin, 1);
             } else {
                 log_message(LOG_LEVEL_TRACE, "led on via pwm dimm");
-                uint32_t led_on_start = _led_on_level(LED_BRIGHTNESS_LEVEL);
+                uint32_t led_on_start = led_on_level(LED_BRIGHTNESS_LEVEL);
                 // Make sure it's been at least 300 us since the emitter pin was first set
                 // high before returning. (Driver min is 250 us.) Some time might have
                 // already passed while we set the dimming level.
@@ -267,25 +268,31 @@ enum Extremum {
     NONE, MINIMUM, MAXIMUM
 };
 
+struct IndexedExtremum {
+    Extremum extremum;
+    uint16_t index;
+};
+
 class DerivativeExtrema {
     private:
         uint8_t window_size = 21;
         Window window = Window(window_size);
         uint8_t noise_threshold;
         int32_t prev_dy = 0;
+        uint8_t window_midpoint = (window_size - 1) / 2;
     public:
         DerivativeExtrema(uint8_t noise_threshold): noise_threshold(noise_threshold) {};
 
-        Extremum add_point(uint16_t y) {
+        IndexedExtremum add_point(uint16_t y, uint16_t current_index) {
             window.append(y);
             if (!window.filled()) {
                 log_message(LOG_LEVEL_TRACE, "Window not filled");
-                return NONE;
+                return {NONE, 0};
             }
             int32_t current_dy = static_cast<int32_t>(window.newest()) - static_cast<int32_t>(window.oldest());
             if (abs(current_dy) <= noise_threshold) {
                 log_message(LOG_LEVEL_TRACE, abs(current_dy));
-                return NONE;
+                return {NONE, 0};
             }
             Extremum extrema_detected = NONE;
             if (prev_dy != 0) {
@@ -297,12 +304,14 @@ class DerivativeExtrema {
             }
 
             if (extrema_detected != NONE) {
+                uint16_t extremum_index = current_index - window_midpoint;
                 log_message(LOG_LEVEL_TRACE, "extremum detected");
                 prev_dy = 0;
+                return {extrema_detected, extremum_index};
             } else {
                 prev_dy = current_dy;
+                return {NONE, 0};
             }
-            return extrema_detected;
         }
 };
 
@@ -467,7 +476,7 @@ class BarcodeDataGatherer {
         }
     public:
         SignalData gather_raw_barcode_data() {
-            qtr_decoder._led_on();
+            qtr_decoder.led_on();
             STATE.raw_data_idx = 0;
             STATE.COLLECTING = true;
             if (baseline_undefined()) {
@@ -492,8 +501,8 @@ class BarcodeDataGatherer {
             while (raw_data_processed_idx < STATE.MAX_SAMPLES) {
                 wait_for_sample_ready(raw_data_processed_idx);
                 value = STATE.raw_data_buffer[raw_data_processed_idx];
-                Extremum extremum = extrema_detector.add_point(value); // add median from last X points maybe 3/5/7?
-                if (extremum == MAXIMUM) {
+                IndexedExtremum extremum = extrema_detector.add_point(value, raw_data_processed_idx); // add median from last X points maybe 3/5/7?
+                if (extremum.extremum == MAXIMUM) {
                     sprintf(str, "maxima detected %i", raw_data_processed_idx);
                     log_message(LOG_LEVEL_DEBUG, str);
                     last_max_extremum = raw_data_processed_idx;
@@ -521,7 +530,7 @@ class BarcodeDataGatherer {
                 }
             }
             STATE.COLLECTING = false;
-            qtr_decoder._led_off();
+            qtr_decoder.led_off();
             log_message(LOG_LEVEL_DEBUG, "signal gathered");
             log_message(LOG_LEVEL_DEBUG, maxima_counter);
 
@@ -578,8 +587,7 @@ bool compare_ranges_reversed(const Range &a, const Range &b)
 }
 
 class DataPreprocessor {
-    //private:
-    public:
+    private:
         Range verify_and_expand(uint16_t data[], uint16_t N, uint16_t idx, uint16_t look_ahead, uint16_t threshold) {
             uint16_t base = data[idx];
             uint16_t start = idx;
@@ -722,48 +730,6 @@ class DataPreprocessor {
             }
         }
 
-        void min_max_filter_inplace(uint16_t data[], uint16_t N, uint16_t window_size=5) {
-            DerivativeExtrema extrema = DerivativeExtrema(int(SCALE * 0.003));
-            if (window_size % 2 == 0) {
-                window_size += 1;
-            }
-            uint16_t window_half = window_size / 2;
-            Window window = Window(window_size);
-            Extremum mode = MAXIMUM;
-            uint16_t current_extremum = 0;
-            uint16_t cnt = 0;
-            for (uint16_t idx = 0; idx < N; idx++) {
-                uint16_t value = data[idx];
-                if (mode == MAXIMUM && value > current_extremum) {
-                    current_extremum = value;
-                } else if (mode == MINIMUM && value < current_extremum) {
-                    current_extremum = value;
-                }
-                int discarded = window.append(value);
-                if (discarded != -1 && discarded == current_extremum) {
-                    cnt++;
-                    current_extremum = (mode == MAXIMUM) ? window.maximum() : window.minimum();
-                }
-                if (idx - window_half - 1 >= 0) {
-                    data[idx - window_half - 1] = current_extremum;
-                }
-                if (idx <= window_half || idx >= N - window_half - 1) {
-                    data[idx] = window.minimum();
-                } 
-                Extremum extremum = extrema.add_point(current_extremum);
-                if (extremum != NONE) {
-                    if (current_log_level == LOG_LEVEL_TRACE) {
-                        char str[50];
-                        sprintf(str, "extremum detected %d-> %u : %u", extremum, idx, value);
-                        log_message(LOG_LEVEL_TRACE, str);
-                    }
-                    mode = (extremum == MAXIMUM) ? MINIMUM : MAXIMUM;
-                    current_extremum = value;
-                }
-            }
-            log_message(LOG_LEVEL_TRACE, cnt);
-        }
-
         void median_filter_inplace(uint16_t data[], uint16_t N, uint16_t window_size=11) {
             if (window_size % 2 == 0) {
                 window_size += 1;
@@ -788,7 +754,7 @@ class DataPreprocessor {
             }
         }
 
-    //public:
+    public:
         uint16_t smoothen_inplace(uint16_t data[], uint16_t N) {
             normalize_data_inplace(data, N);
             log_message(LOG_LEVEL_DEBUG, "normalization completed");
@@ -931,139 +897,6 @@ class BarcodeDecoder {
             }
         }
 
-        std::vector<Range> find_confident_bits(uint16_t data[], uint16_t N) {
-            std::vector<Range> bits;
-            std::vector<uint16_t> intersections = find_intersections(data, N, int(SCALE*0.8), bits);
-            for (int idx = 0; idx + 1 < intersections.size(); idx += 2) {
-                uint16_t left = intersections[idx];
-                uint16_t rigth = intersections[idx + 1];
-                Range bit = extend_bit_range(data, N, left, rigth, int(SCALE*0.6), true);
-                bits.push_back(bit);
-            }
-            intersections = find_intersections(data, N, int(SCALE*0.58), bits);
-            log_message(LOG_LEVEL_DEBUG, intersections.size());
-            for (int idx = 0; idx + 1 < intersections.size(); idx += 2) {
-                printf("%d %d\n", idx, intersections.size() - 1);
-                uint16_t left = intersections[idx];
-                uint16_t rigth = intersections[idx + 1];
-                Range bit = extend_bit_range(data, N, left, rigth, int(SCALE*0.6), true);
-                bits.push_back(bit);
-            }
-            return bits;
-        }
-
-        std::vector<Range> find_starting_bits(uint16_t data[], uint16_t N, Range first_bit) {
-            std::vector<Range> bits;
-            if (first_bit.start > 0 && slice_max(data, 0, first_bit.start).value > data[first_bit.start] * 1.1) {
-                uint16_t threshold = 0.7 * slice_max(data, 0, first_bit.start).value;
-                std::vector<uint16_t> intersections = find_intersections(data, N, threshold, { Range { first_bit.start, N } });
-                for (int idx = 0; idx + 1 < intersections.size(); idx += 2) {
-                    printf("%d %d\n", idx, intersections.size() - 1);
-                    uint16_t left = intersections[idx];
-                    uint16_t rigth = intersections[idx + 1];
-                    Range bit = extend_bit_range(data, N, left, rigth, 0.3 * slice_max(data, 0, first_bit.start).value, true);
-                    bits.push_back(bit);
-                }
-            }
-            return bits;
-        }
-
-        std::vector<Range> find_certain_middle_bits(uint16_t data[], uint16_t N, Range previous_bit, Range next_bit, uint16_t min_bit_width) {
-            std::vector<Range> bits;
-            uint16_t prominence = slice_max(data, previous_bit.start + 1, next_bit.start).value - MAX(data[previous_bit.end], data[next_bit.start]);
-            if (prominence > int(SCALE * 0.05)) {
-                uint16_t threshold = slice_max(data, previous_bit.end, next_bit.start).value - prominence * 0.5;
-                std::vector<uint16_t> intersections = find_intersections(data, N, threshold, { Range { 0, previous_bit.end }, Range { next_bit.start, N } });
-                for (int idx = 0; idx + 1 < intersections.size(); idx += 2) {
-                    uint16_t left = intersections[idx];
-                    uint16_t rigth = intersections[idx + 1];
-                    Range bit = extend_bit_range(data, N, left, rigth, MIN(data[previous_bit.end], data[next_bit.start]) * 1.1, false);
-                    bits.push_back(bit);
-                }
-            }
-            return bits;
-        }
-
-        std::vector<Range> expand_surrounding_bits_and_find_middle_bits(uint16_t data[], uint16_t N, Range previous_bit, Range next_bit, uint16_t min_bit_width) {
-            std::vector<Range> bits;
-            uint16_t window_size = int(N * 0.025);
-            uint16_t threshold = slice_min(data, previous_bit.end, next_bit.start).value * 1.1;
-            uint16_t expanded_prev_end = expand_right(data, N,
-                 previous_bit.end,
-                 window_size,
-                 threshold,
-                 true);
-            uint16_t expanded_next_start = expand_right(data, N,
-                previous_bit.end,
-                window_size,
-                threshold,
-                true);
-            if (expanded_prev_end < expanded_next_start && expanded_next_start - expanded_prev_end > int(0.8 * min_bit_width)) {
-                return find_certain_middle_bits(data, N,
-                    Range { previous_bit.start, expanded_prev_end },
-                    Range { expanded_next_start, next_bit.end },
-                    min_bit_width);
-            }
-            return bits;
-        }
-
-        void merge_too_short_bits(uint16_t data[], uint16_t N, std::vector<Range> middle_bits, uint16_t min_bit_width, uint16_t max_bit_width) {
-            for (uint16_t idx = 0; idx < middle_bits.size(); ) {
-                Range mid_bit_prev = middle_bits[idx];
-                Range mid_bit_next = middle_bits[idx + 1];
-                uint16_t bit_width_prev = bit_width(mid_bit_prev);
-                uint16_t bit_width_next = bit_width(mid_bit_next);
-                if (bit_width_prev < 0.8 * min_bit_width && bit_width_next < 0.8 * min_bit_width && bit_width_prev + bit_width_next <= max_bit_width) {
-                    if (mid_bit_next.start - mid_bit_prev.end <= 1 || 
-                        (slice_min(data, mid_bit_prev.end, mid_bit_next.start).value == slice_max(data, mid_bit_prev.end, mid_bit_next.start).value)) {
-                            Range joined_bit = Range { mid_bit_prev.start, mid_bit_next.end };
-                            middle_bits[idx] = joined_bit;
-                            middle_bits.erase(middle_bits.begin() + idx + 1);
-                            continue;
-                    }
-                }
-                idx += 1;
-            }
-        }
-
-        std::vector<Range> find_bits_between(uint16_t data[], uint16_t N, Range previous_bit, Range next_bit, uint16_t min_bit_width) {
-            std::vector<Range> bits;
-            if (next_bit.start > previous_bit.end && next_bit.start - previous_bit.end > int(0.8 * min_bit_width)) {
-                bits = find_certain_middle_bits(data, N, previous_bit, next_bit, min_bit_width);
-                if (bits.size() == 0) {
-                    bits = expand_surrounding_bits_and_find_middle_bits(data, N, previous_bit, next_bit, min_bit_width);
-                }
-            }
-            return bits;
-        }
-
-        std::vector<Range> find_plateau_bits(uint16_t data[], uint16_t N, std::vector<Range> found_bits, uint16_t min_bit_width, uint16_t max_bit_width) {
-            std::vector<Range> bits;
-            std::vector<std::tuple<uint16_t, uint16_t, uint16_t>> non_bit_spaces;
-            for (int idx = 0; idx + 1 < found_bits.size(); idx += 1) {
-                Range previous_bit = found_bits[idx];
-                Range next_bit = found_bits[idx + 1];
-                if (next_bit.start - previous_bit.end > 2) {
-                    non_bit_spaces.push_back(std::make_tuple(next_bit.start - previous_bit.end, previous_bit.end + 1, next_bit.start - 1));
-                }
-            }
-            std::sort(non_bit_spaces.begin(), non_bit_spaces.end());
-            for (uint16_t bit_count = found_bits.size(); bit_count < 10; bit_count += 1) {
-                for (uint16_t idx = 0; idx < non_bit_spaces.size(); idx += 1) {
-                    std::tuple<uint16_t, uint16_t, uint16_t> potential_bit = non_bit_spaces[idx];
-                    uint16_t width = std::get<0>(potential_bit);
-                    uint16_t potential_bit_start = std::get<1>(potential_bit);
-                    uint16_t potential_bit_end = std::get<2>(potential_bit);
-                    if (width >= 0.9 * min_bit_width && width <= 1.1 * max_bit_width) {
-                        bits.push_back(Range { potential_bit_start, potential_bit_end });
-                        non_bit_spaces.erase(non_bit_spaces.begin());
-                        break;
-                    }
-                }
-            }
-            return bits;
-        }
-
         uint16_t calc_min_bit_width(std::vector<Range> bits) {
             uint16_t min = UINT16_MAX;
             for (uint16_t idx = 0; idx < bits.size(); idx++) {
@@ -1088,45 +921,54 @@ class BarcodeDecoder {
 
     public:
         std::vector<Range> find_bits(uint16_t data[], uint16_t N) {
-            std::vector<Range> all_bits;
-            all_bits = find_confident_bits(data, N);
-            adjust_boundaries(data, N, all_bits);
-            std::vector<Range> tmp_bits = find_starting_bits(data, N, all_bits[0]);
-            all_bits.insert(std::end(all_bits), std::begin(tmp_bits), std::end(tmp_bits));
-            adjust_boundaries(data, N, all_bits);
-            tmp_bits.clear();
-            uint16_t min_bit_width = calc_min_bit_width(all_bits);
-            uint16_t max_bit_width = calc_max_bit_width(all_bits);
-            for (int idx = 0; idx + 1 < all_bits.size(); idx++) {
-                Range previous_bit = all_bits[idx];
-                Range next_bit = all_bits[idx + 1];
-                std::vector<Range> mid_bits = find_bits_between(data, N, previous_bit, next_bit, min_bit_width);
-                merge_too_short_bits(data, N, mid_bits, min_bit_width, max_bit_width);
-                tmp_bits.insert(std::end(tmp_bits), std::begin(mid_bits), std::end(mid_bits));
+            DerivativeExtrema extremum_finder = DerivativeExtrema(15);
+           
+            std::vector<IndexedExtremum> signal_extremums;
+            std::vector<Range> bits_positions;
+            for (uint16_t idx = 0; idx < N; idx++) {
+                IndexedExtremum local = extremum_finder.add_point(data[idx], idx);
+                if (local.extremum != NONE) {
+                    signal_extremums.push_back(local);
+                }
             }
-            all_bits.insert(std::end(all_bits), std::begin(tmp_bits), std::end(tmp_bits));
-            tmp_bits.clear();
-            adjust_boundaries(data, N, all_bits);
-
-            if (all_bits.size() < 10) {
-                min_bit_width = calc_min_bit_width(all_bits);
-                max_bit_width = calc_max_bit_width(all_bits);
-                tmp_bits = find_plateau_bits(data, N, all_bits, min_bit_width, max_bit_width);
-                all_bits.insert(std::end(all_bits), std::begin(tmp_bits), std::end(tmp_bits));
+            if (!signal_extremums.empty()) {
+                for (int idx = signal_extremums.size() - 1; idx >= 0; idx--) {
+                    IndexedExtremum extremum = signal_extremums.at(idx);
+                    if (extremum.extremum == MAXIMUM && bits_positions.size() < 10) {
+                        bits_positions.push_back(extend_bit_range(data, N, extremum.index, extremum.index, 3, true));
+                    }
+                }
             }
-            std::sort(all_bits.begin(), all_bits.end(), compare_ranges_reversed);
-
-            return all_bits;
+            // [TODO] DerivativeExtrema
+            // -- find 10 last maximums
+            // -- find minimumums between them and their middles
+            // -- if found 9 -> try to mirror first edge and treat it as a bit?
+            return bits_positions;
         }
 
         uint16_t decode_barcode(uint16_t data[], uint16_t N) {
             std::vector<Range> all_bits = find_bits(data, N);
+            char str[50];
+            sprintf(str, "found %d bits", all_bits.size());
+            log_message(LOG_LEVEL_INFO, str);
+            if (current_log_level == LOG_LEVEL_DEBUG) {
+                char str[300] = "";
+                for(int i = 0; i < all_bits.size(); i++) {
+                    char temp[16];
+                    sprintf(temp, "(%d, %d)", all_bits[i].start, all_bits[i].end);  // Assuming all_bits[i] is an integer
+                    strcat(str, temp);
+                    if (i < all_bits.size() - 1) {
+                        strcat(str, ", ");
+                    }
+                }
+                log_message(LOG_LEVEL_DEBUG, str);
+            }
             uint16_t number = 0;
             char binary_number[] = "0000000000";
             for (uint16_t idx = 0; idx < all_bits.size(); idx++) {
                 uint16_t bit_height_diff = slice_max(data, all_bits[idx].start, all_bits[idx].end).value - slice_min(data, all_bits[idx].start, all_bits[idx].end + 1).value;
                 uint16_t bit = 0;
-                if (bit_height_diff > int(SCALE*0.4)) {
+                if (bit_height_diff > int(SCALE*0.6)) {
                     bit = 1;
                 }
                 if (bit != 1 && (idx == 0 || idx == 1)) {
@@ -1141,34 +983,6 @@ class BarcodeDecoder {
             return number;
         }
 };
-
-void time_measure(DataPreprocessor preprocessor) {
-    uint16_t sample_data[] = {
-        30, 30, 30, 30, 35, 34, 34, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 34, 34, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 38, 38, 39, 39, 40, 41, 41, 42, 43, 44, 44, 45, 46, 47, 47, 48, 49, 50, 51, 53, 53, 55, 56, 57, 58, 60, 61, 63, 64, 65, 66, 67, 68, 69, 70, 71, 71, 72, 73, 73, 73, 73, 73, 72, 71, 70, 70, 69, 68, 67, 66, 64, 63, 62, 61, 60, 58, 57, 56, 54, 53, 52, 50, 49, 48, 47, 46, 45, 44, 43, 43, 42, 41, 40, 40, 39, 38, 38, 37, 36, 36, 36, 35, 35, 34, 34, 33, 33, 32, 32, 32, 32, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 31, 31, 31, 31, 31, 31, 32, 32, 32, 33, 33, 33, 34, 34, 34, 34, 35, 35, 35, 35, 36, 36, 36, 36, 37, 37, 38, 38, 39, 39, 40, 41, 42, 42, 43, 44, 45, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60, 61, 62, 63, 65, 65, 67, 68, 69, 70, 72, 72, 73, 74, 74, 75, 75, 75, 75, 75, 74, 73, 73, 72, 71, 70, 69, 68, 67, 66, 65, 63, 62, 60, 59, 58, 56, 55, 53, 52, 50, 49, 48, 46, 45, 44, 43, 42, 41, 40, 40, 39, 38, 37, 37, 36, 35, 35, 34, 34, 33, 33, 33, 32, 32, 32, 31, 31, 31, 30
-    };
-    
-    uint16_t sample_data_plateau[] = {
-        30, 30, 30, 30, 35, 34, 34, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 34, 34, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 38, 38, 39, 39, 40, 41, 41, 42, 43, 44, 44, 45, 46, 47, 47, 48, 49, 50, 51, 53, 53, 55, 56, 57, 58, 60, 61, 63, 64, 65, 66, 67, 68, 69, 70, 71, 71, 72, 73, 73, 73, 73, 73, 72, 71, 70, 70, 69, 68, 67, 66, 64, 63, 62, 61, 60, 58, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 57, 56, 54, 53, 52, 50, 49, 48, 47, 46, 45, 44, 43, 43, 42, 41, 40, 40, 39, 38, 38, 37, 36, 36, 36, 35, 35, 34, 34, 33, 33, 32, 32, 32, 32, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 31, 31, 31, 31, 31, 31, 32, 32, 32, 33, 33, 33, 34, 34, 34, 34, 35, 35, 35, 35, 36, 36, 36, 36, 37, 37, 38, 38, 39, 39, 40, 41, 42, 42, 43, 44, 45, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60, 61, 62, 63, 65, 65, 67, 68, 69, 70, 72, 72, 73, 74, 74, 75, 75, 75, 75, 75, 74, 73, 73, 72, 71, 70, 69, 68, 67, 66, 65, 63, 62, 60, 59, 58, 56, 55, 53, 52, 50, 49, 48, 46, 45, 44, 43, 42, 41, 40, 40, 39, 38, 37, 37, 36, 35, 35, 34, 34, 33, 33, 33, 32, 32, 32, 31, 31, 31, 30
-    };
-
-    uint16_t N = sizeof(sample_data_plateau)/sizeof(uint16_t);
-    uint16_t window_size = MAX(5, int(N / 100));
-    uint32_t start = time_us_32();
-    preprocessor.normalize_data_inplace(sample_data_plateau, N);
-    uint32_t normalize = time_us_32();
-    preprocessor.min_max_filter_inplace(sample_data_plateau, N, window_size);
-    uint32_t min_max = time_us_32();
-    uint16_t filtered_N = preprocessor.filter_plateaus_inplace(sample_data_plateau, N, int(SCALE*0.02));
-    uint32_t filtered = time_us_32();
-    preprocessor.median_filter_inplace(sample_data_plateau, filtered_N, 5);
-    uint32_t median = time_us_32();
-    for (int i = 0; i < filtered_N; i++) {
-        printf("%u, ", sample_data_plateau[i]);
-    }
-    printf("\n");
-    printf("%u %u %u %u\n", normalize - start, min_max - normalize, filtered - min_max, median - filtered);
-    printf("\n");
-}
 
 int main()
 {
@@ -1202,7 +1016,7 @@ int main()
         uint16_t value = barcode_decoder.decode_barcode(data.array_ptr, smoothen_N);
         log_message(LOG_LEVEL_DEBUG, "barcode decoded");
         log_message(LOG_LEVEL_INFO, value);
-        qtr_decoder._led_off();
+        qtr_decoder.led_off();
         sleep_ms(50);
     }
 }
