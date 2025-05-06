@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <limits.h>
 #include <algorithm>
@@ -158,11 +159,19 @@ class Window {
         int newest_idx;
         bool is_full;
         uint16_t* buffer;
+        uint8_t window_midpoint;
     public:
-        Window(uint8_t size): size(size) {
+        Window(uint8_t size_param) {
+            if (size_param % 2 == 0) {
+                size = size_param + 1;
+            } else {
+                size = size_param;
+            }
             buffer = new uint16_t[size];
             oldest_idx = 0;
             newest_idx = -1;
+            window_midpoint = size / 2;
+            is_full = false;
         }
 
         int append(uint16_t item) 
@@ -179,6 +188,16 @@ class Window {
             newest_idx = (newest_idx + 1) % size;
             buffer[newest_idx] = item;
             return result;
+        }
+
+        void print() {
+            uint8_t last_val_idx = (filled()) ? size : newest_idx + 1;
+            for (uint8_t val_idx = 0; val_idx < last_val_idx; val_idx++) {
+                uint8_t index = (oldest_idx + val_idx) % size;
+                uint16_t value = buffer[index];
+                printf("%u, ", value);
+            }
+            printf("\n");
         }
 
         uint16_t newest() const
@@ -244,10 +263,11 @@ class Window {
                 return -1;
             }
             uint16_t N = size;
+            uint16_t median_position = window_midpoint;
             if (!filled()) {
-                N = newest_idx;
+                N = newest_idx + 1;
+                median_position = newest_idx / 2;
             }
-            uint16_t median_position = N / 2;
             // fast median: https://stackoverflow.com/a/33325864
             for (size_t i = 0; i < N; i++) {
                 auto x = buffer[i];
@@ -303,10 +323,16 @@ class DerivativeExtrema {
                 }
             }
 
-            if (extrema_detected != NONE) {
+            if (extrema_detected != NONE && current_index > window_midpoint) {
                 uint16_t extremum_index = current_index - window_midpoint;
-                log_message(LOG_LEVEL_TRACE, "extremum detected");
+                if (current_log_level == LOG_LEVEL_TRACE) {
+                    char str[50];
+                    sprintf(str, "extremum detected %i %i", prev_dy, current_dy);
+                    log_message(current_log_level, str);
+                    window.print();
+                }
                 prev_dy = 0;
+                
                 return {extrema_detected, extremum_index};
             } else {
                 prev_dy = current_dy;
@@ -328,7 +354,7 @@ void pico_set_led(bool led_on) {
 }
 
 struct BarcodeDataGathererState {
-    static constexpr uint32_t MAX_SAMPLES = 3000;
+    static constexpr uint32_t MAX_SAMPLES = 5000;
     uint16_t raw_data_buffer[MAX_SAMPLES];
     volatile uint16_t raw_data_idx = 0;
     volatile bool COLLECTING = false;
@@ -474,6 +500,44 @@ class BarcodeDataGatherer {
                 sleep_us(5);
             }
         }
+
+        uint16_t detect_signal_end(uint16_t raw_data_processed_idx, uint16_t starting_idx, uint16_t last_max_extremum) {
+            uint16_t end_idx = raw_data_processed_idx - 1;
+            uint16_t signal_min = data_min(starting_idx, last_max_extremum).value;
+            for (uint16_t idx = last_max_extremum; idx < end_idx; idx++) {
+                if (STATE.raw_data_buffer[idx] <= signal_min) {
+                    end_idx = idx;
+                    break;
+                }
+            }
+            return end_idx;
+        }
+
+        uint16_t detect_signal_start(uint16_t starting_idx, uint16_t end_idx) {
+            uint16_t signal_max = data_max(starting_idx, end_idx).value;
+            for (uint16_t idx = 2; idx <= 100; idx++) {
+                int prev_prev_value = STATE.raw_data_buffer[idx - 2];
+                int prev_value = STATE.raw_data_buffer[idx - 1];
+                int value = STATE.raw_data_buffer[idx];
+                int first_deriv = prev_value - value;
+                int second_deriv = (value - 2*prev_value + prev_prev_value);
+                int first_deriv_spaced = prev_prev_value - value;
+                if (first_deriv <= 1 && second_deriv <= 0 && first_deriv_spaced <= 1) {
+                    return idx;
+                }
+                if (value <= signal_max) {
+                    if (prev_prev_value <= signal_max * 1.03) {
+                        return idx - 2;
+                    }
+                    if (prev_value <= signal_max * 1.03) {
+                        return idx - 1;
+                    }
+                    return idx;
+                }
+            }
+            return starting_idx;
+        }
+
     public:
         SignalData gather_raw_barcode_data() {
             qtr_decoder.led_on();
@@ -496,17 +560,21 @@ class BarcodeDataGatherer {
             char str[50];
             sprintf(str, "gathering signal %d", break_value);
             log_message(LOG_LEVEL_INFO, str);
-            DerivativeExtrema extrema_detector = DerivativeExtrema(2);
+            DerivativeExtrema extrema_detector = DerivativeExtrema(3);
             uint8_t maxima_counter = 0;
+            Window median_window = Window(11);
             while (raw_data_processed_idx < STATE.MAX_SAMPLES) {
                 wait_for_sample_ready(raw_data_processed_idx);
                 value = STATE.raw_data_buffer[raw_data_processed_idx];
-                IndexedExtremum extremum = extrema_detector.add_point(value, raw_data_processed_idx); // add median from last X points maybe 3/5/7?
-                if (extremum.extremum == MAXIMUM) {
-                    sprintf(str, "maxima detected %i", raw_data_processed_idx);
-                    log_message(LOG_LEVEL_DEBUG, str);
-                    last_max_extremum = raw_data_processed_idx;
-                    maxima_counter += 1;
+                median_window.append(value);
+                IndexedExtremum extremum = extrema_detector.add_point(median_window.median(), raw_data_processed_idx);
+                if (median_window.filled()) {
+                    if (extremum.extremum == MAXIMUM) {
+                        sprintf(str, "maxima detected %i", extremum.index);
+                        log_message(LOG_LEVEL_DEBUG, str);
+                        last_max_extremum = raw_data_processed_idx;
+                        maxima_counter += 1;
+                    }
                 }
                 if (raw_data_processed_idx > 50 && value >= baseline * 0.8) {
                     // handle signal end
@@ -531,6 +599,7 @@ class BarcodeDataGatherer {
             }
             STATE.COLLECTING = false;
             qtr_decoder.led_off();
+            log_message(LOG_LEVEL_DEBUG, starting_idx);
             log_message(LOG_LEVEL_DEBUG, "signal gathered");
             log_message(LOG_LEVEL_DEBUG, maxima_counter);
 
@@ -538,29 +607,18 @@ class BarcodeDataGatherer {
                 // handle too short data
             }
 
-            uint16_t end_idx = raw_data_processed_idx - 1;
-            uint16_t signal_min = data_min(starting_idx, last_max_extremum).value;
-            for (uint16_t idx = last_max_extremum; idx < end_idx; idx++) {
-                if (STATE.raw_data_buffer[idx] <= signal_min) {
-                    end_idx = idx;
-                    break;
-                }
-            }
-            uint16_t signal_max = data_max(starting_idx, end_idx).value;
-            for (uint16_t idx = 0; idx <= starting_idx; idx++) {
-                if (STATE.raw_data_buffer[idx] <= signal_max) {
-                    starting_idx = idx;
-                    if (idx > 0 && STATE.raw_data_buffer[idx - 1] <= signal_max * 1.03) {
-                        starting_idx = idx - 1;
-                    }
-                    break;
-                }
-            }
+            uint16_t end_idx = detect_signal_end(raw_data_processed_idx, starting_idx, last_max_extremum);
+            starting_idx = detect_signal_start(starting_idx, end_idx);
+
             uint16_t signal_data_size = end_idx + 1 - starting_idx;
             uint16_t (*signal_data) = &STATE.raw_data_buffer[starting_idx];
             if (signal_data_size < expected_bits * 10) {
                 // handle too short data
             }
+            for (int i = 0; i < end_idx; i++) {
+                printf("%u, ", STATE.raw_data_buffer[i]);
+            }
+            printf("\n");
             return SignalData { signal_data, signal_data_size };
         };
 };
@@ -771,7 +829,7 @@ class BarcodeDecoder {
         uint16_t expand_left(uint16_t data[], uint16_t N, uint16_t left, uint16_t window_size, uint16_t window_size_threshold, bool shrink_edge_plateaus) {
             uint16_t expanded_left = left;
             uint16_t last_changed = MAX(0, left - 1);
-            for (uint16_t idx = MAX(0, left - 1); idx >= 0; idx--) {
+            for (int idx = MAX(0, left - 1); idx >= 0; idx--) {
                 if (data[idx] > data[idx + 1]) {
                     if (data[idx] > data[idx + 1] + int(SCALE*0.025)) {
                         break;
@@ -790,7 +848,7 @@ class BarcodeDecoder {
             }
 
             if (shrink_edge_plateaus) {
-                for (uint16_t idx = expanded_left; idx < left; idx++) {
+                for (int idx = expanded_left; idx < left; idx++) {
                     if (data[idx + 1] > data[idx]) {
                         break;
                     }
@@ -822,7 +880,7 @@ class BarcodeDecoder {
             }
 
             if (shrink_edge_plateaus) {
-                for (uint16_t idx = expanded_right; idx > right; idx--) {
+                for (int idx = expanded_right; idx > right; idx--) {
                     if (data[idx - 1] > data[idx]) {
                         break;
                     }
@@ -935,14 +993,34 @@ class BarcodeDecoder {
                 for (int idx = signal_extremums.size() - 1; idx >= 0; idx--) {
                     IndexedExtremum extremum = signal_extremums.at(idx);
                     if (extremum.extremum == MAXIMUM && bits_positions.size() < 10) {
-                        bits_positions.push_back(extend_bit_range(data, N, extremum.index, extremum.index, 3, true));
+                        if (idx < signal_extremums.size() - 1 && idx > 0) {
+                            IndexedExtremum prev_extremum = signal_extremums.at(idx + 1);
+                            IndexedExtremum next_extremum = signal_extremums.at(idx - 1);
+                            if (prev_extremum.extremum == MINIMUM && next_extremum.extremum == MINIMUM) {
+                                bits_positions.push_back(extend_bit_range(data, N, extremum.index, extremum.index, 3, true));
+                            }
+                        } else if (idx == signal_extremums.size() - 1 && idx > 0) {
+                            IndexedExtremum next_extremum = signal_extremums.at(idx - 1);
+                            if (next_extremum.extremum == MINIMUM) {
+                                bits_positions.push_back(extend_bit_range(data, N, extremum.index, extremum.index, 3, true));
+                            }
+                        }
+                        
                     }
                 }
             }
-            // [TODO] DerivativeExtrema
-            // -- find 10 last maximums
-            // -- find minimumums between them and their middles
-            // -- if found 9 -> try to mirror first edge and treat it as a bit?
+            adjust_boundaries(data, N, bits_positions);
+            if (bits_positions.size() == 9) {
+                IndexedExtremum extremum = signal_extremums.at(0);
+                if (extremum.extremum == MINIMUM) {
+                    uint16_t first_minimum = extremum.index;
+                    uint16_t first_max = slice_max(data, 0, first_minimum).value;
+                    if (first_max > int(SCALE*0.3)) {
+                        bits_positions.push_back(extend_bit_range(data, N, 0, 0, 3, true));
+                    }
+                }
+            }
+            adjust_boundaries(data, N, bits_positions);
             return bits_positions;
         }
 
@@ -975,7 +1053,7 @@ class BarcodeDecoder {
                     // handle first 2 bits always 1
                 }
                 if (bit == 1) {
-                    binary_number[all_bits.size() - 1 - idx] = '1';
+                    binary_number[idx] = '1';
                 }
                 number = number*2 + bit;
             }
@@ -1002,7 +1080,6 @@ int main()
     DataPreprocessor preprocessor = DataPreprocessor();
     BarcodeDecoder barcode_decoder = BarcodeDecoder();
     log_message(LOG_LEVEL_INFO, "system initialized");
-
     while (true) {
         SignalData data = gatherer.gather_raw_barcode_data();
         log_message(LOG_LEVEL_DEBUG, "signal gathered");
