@@ -38,7 +38,8 @@ pico_sdk_init()
 # Add executable. Default name is the project name, version 0.1
 add_executable(kid-boombox 
         components/barcode_scanner.cpp
-        components/audio_player.cpp 
+        components/audio_player.cpp
+        components/pico_flash_storage.cpp 
         kid-boombox.cpp)
 
 add_subdirectory(lib/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico/src build)

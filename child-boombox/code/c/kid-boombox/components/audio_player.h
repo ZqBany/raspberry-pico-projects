@@ -34,7 +34,7 @@ namespace audio
         bool buffer_processed;
     } play_result_t;
 
-    void initialize_module();
+    void initialize_module(AUDIO_VOLUME saved_volume);
     void deinitialize_module();
     bool open_file(char *filename);
     bool rewind_to_audio_beginning();

@@ -386,7 +386,8 @@ namespace audio {
         public:
             I2SAudioPlayer(): sd_reader() {}
 
-            void initialize() {
+            void initialize(AUDIO_VOLUME saved_volume) {
+                VOL = saved_volume;
                 init_audio();
                 sleep_ms(5);
 
@@ -504,10 +505,10 @@ namespace audio {
 
     static I2SAudioPlayer i2s_sd_audio_player = I2SAudioPlayer();
 
-    void initialize_module() {
+    void initialize_module(AUDIO_VOLUME saved_volume) {
         sleep_ms(25);
 
-        i2s_sd_audio_player.initialize();
+        i2s_sd_audio_player.initialize(saved_volume);
 
         sleep_ms(5); // w8t for stabilization
     }

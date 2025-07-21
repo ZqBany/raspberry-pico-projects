@@ -4,13 +4,14 @@
 #include "pico/multicore.h"
 #include "components/barcode_scanner.h"
 #include "components/audio_player.h"
+#include "components/pico_flash_storage.h"
 #include "hardware/pio.h"
 #include "pico/sleep.h"
 #include "tusb.h"
 #include "pico/stdio_usb.h"
 #include "hardware/watchdog.h"
 #include "hardware/adc.h"
-#include "hardware/flash.h"
+
 
 #define START_PLAYING_MSG 84
 #define STOP_PLAYING_MSG 85
@@ -26,7 +27,6 @@
 #define SLEEP_TIMEOUT_US 60'000'000 // 1 minute
 
 #define STATUS_LED_MS 100
-
 
 int init_led(void) {
     // A device like Pico that uses a GPIO for the LED will define PICO_DEFAULT_LED_PIN
@@ -107,53 +107,6 @@ enum AUDIO {
 
 static audio::AUDIO_VOLUME SAVED_VOL = audio::VOL_100;
 
-
-struct uint16_checked_data {
-    uint16_t value;
-    uint32_t checksum;
-};
-
-// Helper to align address upwards to the next sector boundary
-static uintptr_t align_addr_to_sector(uintptr_t addr) {
-    uintptr_t offset = addr % FLASH_SECTOR_SIZE;
-    return (offset == 0) ? addr : addr + (FLASH_SECTOR_SIZE - offset);
-}
-
-bool is_valid_flash_address(uintptr_t address, size_t required_size) {
-    return address >= XIP_BASE &&
-           address + required_size <= (XIP_BASE + PICO_FLASH_SIZE_BYTES);
-}
-
-extern char __flash_binary_end; // provided by linker
-const uintptr_t __flash_binary_end_addr = (uintptr_t) &__flash_binary_end;
-const uintptr_t ALIGNED_FLASH_BINARY_END_ADDR = align_addr_to_sector(__flash_binary_end_addr);
-const struct uint16_checked_data* data = (const struct uint16_checked_data*) ALIGNED_FLASH_BINARY_END_ADDR;
-const uintptr_t ALIGNED_FLASH_OFFSET = ALIGNED_FLASH_BINARY_END_ADDR - XIP_BASE;
-
-uint32_t calculate_checksum(uint16_t value) {
-    return (uint32_t)value ^ 0xDEADBEEF;
-}
-
-void save_volume_to_flash(uint16_t val) {
-    struct uint16_checked_data data = { val, calculate_checksum(val) };
-    uint8_t page_buf[FLASH_PAGE_SIZE];
-    memset(page_buf, 0xFF, FLASH_PAGE_SIZE);
-    memcpy(page_buf, &data, sizeof(data));
-
-    uint32_t status = save_and_disable_interrupts();
-    flash_range_erase(ALIGNED_FLASH_OFFSET, FLASH_SECTOR_SIZE);
-    flash_range_program(ALIGNED_FLASH_OFFSET, page_buf, FLASH_PAGE_SIZE);
-    restore_interrupts(status);
-}
-
-// Read the value — basically reading from flash directly
-audio::AUDIO_VOLUME read_saved_volume(void) {
-    printf("%d %d\n", data->value, data->checksum);
-    if (data->checksum == calculate_checksum(data->value))
-        return static_cast<audio::AUDIO_VOLUME>(data->value);
-    return audio::VOL_100; // Or handle error case as appropriate
-}
-
 void power_led_put(bool led_on) {
     //gpio_put(PICO_DEFAULT_LED_PIN, led_on);
     gpio_put(LED_GREEN_GPIO, led_on);
@@ -211,7 +164,14 @@ void core1_main() {
     char filename[50];
     uint32_t last_busy = time_us_32();
 
-    audio::initialize_module();
+    uint16_t saved_volume = storage::read_saved_volume();
+    if (saved_volume != 0) {
+        SAVED_VOL =  static_cast<audio::AUDIO_VOLUME>(saved_volume);
+    } else {
+        SAVED_VOL = audio::VOL_100;
+    }
+    printf("Loaded volume: 0x%04x (%d %%)\n", SAVED_VOL, 100*SAVED_VOL/audio::VOL_100);
+    audio::initialize_module(SAVED_VOL);
 
     CORE_1_STATE.REQUESTED_FILE_ID = HELLO;
     if (open_audio_file(&file_id, filename)) {
@@ -347,8 +307,8 @@ void prepare_for_sleep() {
     }
     audio::AUDIO_VOLUME VOL = audio::current_volume();
     if (VOL != SAVED_VOL) {
-        printf("Saving volume to flash: %08x\n", VOL);
-        save_volume_to_flash(VOL);
+        printf("Saving volume to flash: 0x%04x (%d %%)\n", VOL, 100*VOL/audio::VOL_100);
+        storage::save_volume_to_flash(VOL);
     }
     power_led_put(false);
     gpio_put(LED_YELLOW_GPIO, 0);
@@ -492,13 +452,6 @@ int main()
             sleep();
         } while(true);
     }
-
-    hard_assert(is_valid_flash_address(ALIGNED_FLASH_BINARY_END_ADDR, FLASH_SECTOR_SIZE));
-    printf("FLASH variables: %08x %08x %08x\n", __flash_binary_end_addr, ALIGNED_FLASH_BINARY_END_ADDR, ALIGNED_FLASH_OFFSET);
-
-    SAVED_VOL = read_saved_volume();
-    printf("Loaded volume: 0x%04x (%d %%)\n", SAVED_VOL, 100*SAVED_VOL/audio::VOL_100);
-    // [TODO] init audio module volume with saved value
 
     rc = init_buttons();
     hard_assert(rc == PICO_OK);
