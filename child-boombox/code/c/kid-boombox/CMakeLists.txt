@@ -37,13 +37,13 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 add_executable(kid-boombox 
-        barcode/scanner.cpp 
-        kid-boombox.cpp
-        hw_config.cpp)
+        components/barcode_scanner.cpp
+        components/audio_player.cpp 
+        kid-boombox.cpp)
 
 add_subdirectory(lib/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico/src build)
 
-#add_compile_definitions(USE_PRINTF USE_DBG_PRINTF) # Debug msg for no-OS-FatFS
+add_compile_definitions(USE_PRINTF USE_DBG_PRINTF) # Debug msg for no-OS-FatFS
 
 pico_set_program_name(kid-boombox "kid-boombox")
 pico_set_program_version(kid-boombox "0.1")
@@ -71,7 +71,7 @@ target_link_libraries(kid-boombox
 # Add the standard include files to the build
 target_include_directories(kid-boombox PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
-        ${CMAKE_CURRENT_LIST_DIR}/barcode
+        ${CMAKE_CURRENT_LIST_DIR}/components
 )
 
 target_compile_definitions(kid-boombox PRIVATE

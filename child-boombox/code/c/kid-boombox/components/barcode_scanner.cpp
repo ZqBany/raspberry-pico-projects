@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
-#include "scanner.h"
+#include "barcode_scanner.h"
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 
@@ -1439,7 +1439,6 @@ namespace barcode {
 
     void deinitialize_module() {
         qtr_decoder.deinit();
-
     }
 
     void initialize_baseline() {

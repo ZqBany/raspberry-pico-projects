@@ -1,5 +1,5 @@
-#ifndef SCANNER_H
-#define SCANNER_H
+#ifndef BARCODE_SCANNER_H
+#define BARCODE_SCANNER_H
 
 #define LED_BRIGHTNESS_LEVEL 7 // 7 
 #define CONTROL_PULSE_DELAY_US 2
@@ -20,4 +20,4 @@ namespace barcode
     void gather_barcode_raw_data();
 }
 
-#endif // SCANNER_H
+#endif // BARCODE_SCANNER_H
