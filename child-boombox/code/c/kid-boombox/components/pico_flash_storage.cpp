@@ -62,7 +62,6 @@ namespace storage {
         flash_storage.save_data_to_flash(data_to_save);
     }
 
-   
     uint16_t read_saved_volume(void) {
         saved_data_t *data = flash_storage.read_saved_data();
         printf("0x%04x %d\n", data->volume.value, data->volume.checksum);
@@ -72,6 +71,5 @@ namespace storage {
         printf("Warning: cannot load saved volume\n");
         return 0; // Or handle error case as appropriate
     }
-
 }
 

@@ -39,12 +39,13 @@ pico_sdk_init()
 add_executable(kid-boombox 
         components/barcode_scanner.cpp
         components/audio_player.cpp
-        components/pico_flash_storage.cpp 
+        components/pico_flash_storage.cpp
+        components/vsys_voltage_reader.cpp 
         kid-boombox.cpp)
 
 add_subdirectory(lib/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico/src build)
 
-add_compile_definitions(USE_PRINTF USE_DBG_PRINTF) # Debug msg for no-OS-FatFS
+#add_compile_definitions(USE_PRINTF USE_DBG_PRINTF) # Debug msg for no-OS-FatFS
 
 pico_set_program_name(kid-boombox "kid-boombox")
 pico_set_program_version(kid-boombox "0.1")
