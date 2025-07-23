@@ -885,7 +885,7 @@ namespace barcode {
                 uint16_t end_idx = detect_signal_end(raw_data_processed_idx, first_minumum.index, last_max_extremum);
                 uint16_t starting_idx = detect_signal_start(first_minumum.index, end_idx);
 
-                if (current_log_level < LOG_LEVEL_INFO) {
+                if (current_log_level > LOG_LEVEL_INFO) {
                     for (int i = 0; i < starting_idx; i++) {
                         printf("%u, ", STATE.raw_data_buffer[i]);
                     }
@@ -1269,6 +1269,10 @@ namespace barcode {
                 return max;
             }
 
+            static bool indexed_extremum_comp(IndexedExtremum a, IndexedExtremum b) {
+                return a.index < b.index;
+            }
+
         public:
             std::vector<Range> find_bits(uint16_t data[], DataPreprocessor::SmoothenResult smoothen_result) {
                 char str[50];
@@ -1278,6 +1282,7 @@ namespace barcode {
                 log_message(LOG_LEVEL_INFO, str);
                 std::vector<IndexedExtremum> signal_extremums;
                 std::vector<Range> bits_positions;
+                uint16_t max_minimum_value = 0;
                 for (uint16_t idx = 0; idx < smoothen_result.N; idx++) {
                     IndexedExtremum local_extremum = extremum_finder.add_point(data[idx], idx);
                     if (local_extremum.extremum != NONE) {
@@ -1292,6 +1297,9 @@ namespace barcode {
                                 signal_extremums.push_back(local_extremum);
                             }
                         } else {
+                            if (local_extremum.extremum == MINIMUM && max_minimum_value < data[local_extremum.index]) {
+                                max_minimum_value = data[local_extremum.index];
+                            }
                             IndexedExtremum last_extremum = signal_extremums.back();
                             if (last_extremum.extremum == local_extremum.extremum) {
                                 if (local_extremum.index - last_extremum.index >= 20) {
@@ -1316,7 +1324,67 @@ namespace barcode {
                         }
                     }
                 }
+
                 if (!signal_extremums.empty()) {
+                    sprintf(str, "Max minimum value %d", max_minimum_value);
+                    log_message(LOG_LEVEL_INFO, str);
+                    std::vector<Range> minimas_positions;
+                    int minimum_start = -1;
+                    for (uint16_t idx = 0; idx < smoothen_result.N; idx++) {
+                        if (data[idx] <= max_minimum_value) {
+                            if (minimum_start == -1) {
+                                minimum_start = idx;
+                            }
+                        } else {
+                            if (minimum_start != -1) {
+                                minimas_positions.push_back(Range {(uint16_t) minimum_start, idx} );
+                                minimum_start = -1;
+                            }
+                        }
+                    }
+                    if (minimum_start != -1) {
+                        minimas_positions.push_back(Range {(uint16_t) minimum_start, smoothen_result.N } );
+                    }
+                    sprintf(str, "Found %d minimas", minimas_positions.size());
+                    log_message(LOG_LEVEL_INFO, str);
+                    if (minimas_positions.size() > 1) {
+                        uint16_t last_minimum_end = minimas_positions.at(0).end;
+                        for(int idx = 1; idx < minimas_positions.size(); idx++) {
+                            Range current_min = minimas_positions.at(idx);
+                            bool found_max_between = false;
+                            bool found_current_min_in_extremums = false;
+                            for (int idx = 0; idx < signal_extremums.size(); idx++) {
+                                IndexedExtremum extremum = signal_extremums.at(idx);
+                                if (!found_max_between && extremum.extremum == MAXIMUM) {
+                                    if (extremum.index > last_minimum_end && extremum.index < current_min.start) {
+                                        found_max_between = true;
+                                    }
+                                } else if (!found_current_min_in_extremums && extremum.extremum == MINIMUM) {
+                                    if (extremum.index >= current_min.start && extremum.index < current_min.end) {
+                                        found_current_min_in_extremums = true;
+                                    }
+                                }
+                            }
+                            if (!found_max_between) {
+                                IndexedValue max = slice_max(data, last_minimum_end, current_min.start);
+                                if (max.value > max_minimum_value * 2) {
+                                    sprintf(str, "AD#2 maxima detected %i", max.index);
+                                    log_message(LOG_LEVEL_DEBUG, str);
+                                    signal_extremums.push_back( IndexedExtremum { MAXIMUM, max.index } );
+                                }
+                            }
+                            if (!found_current_min_in_extremums) {
+                                IndexedValue min = slice_min(data, current_min.start, current_min.end);
+                                if (min.value <= max_minimum_value) {
+                                    sprintf(str, "AD#2 minima detected %i", min.index);
+                                    log_message(LOG_LEVEL_DEBUG, str);
+                                    signal_extremums.push_back( IndexedExtremum { MINIMUM, min.index } );
+                                }
+                            }
+                            last_minimum_end = current_min.end;
+                        }
+                    }
+                    std::sort(signal_extremums.begin(), signal_extremums.end(), indexed_extremum_comp);
                     for (int idx = signal_extremums.size() - 1; idx >= 0; idx--) {
                         IndexedExtremum extremum = signal_extremums.at(idx);
                         if (extremum.extremum == MAXIMUM) {
@@ -1348,27 +1416,6 @@ namespace barcode {
                                 }
                             }
                             
-                        }
-                    }
-                }
-                adjust_boundaries(data, smoothen_result.N, bits_positions);
-                uint16_t shortest_bit = UINT16_T_MAX;
-                for (uint16_t idx = 0; idx < bits_positions.size(); idx++) {
-                    uint16_t bit_w = bit_width(bits_positions.at(idx));
-                    if (bit_w < shortest_bit) {
-                        shortest_bit = bit_w;
-                    }
-                }
-                for (uint16_t idx = 0; idx + 1 < bits_positions.size(); idx++) {
-                    Range bit = bits_positions.at(idx);
-                    Range prev_bit = bits_positions.at(idx + 1);
-                    if (bit.start > prev_bit.end + shortest_bit * 0.7) {
-                        uint16_t potential_bit_mid = prev_bit.end + (bit.start - prev_bit.end) / 2;
-                        uint16_t left_min = slice_min(data, prev_bit.end, potential_bit_mid).value;
-                        uint16_t right_min = slice_min(data, potential_bit_mid, bit.start).value;
-                        IndexedValue max_val = slice_max(data, prev_bit.end, bit.start);
-                        if (max_val.value - left_min > 0.1 * SCALE && max_val.value - right_min > 0.1 * SCALE) {
-                            bits_positions.push_back(Range { prev_bit.end, bit.start});
                         }
                     }
                 }
@@ -1465,7 +1512,7 @@ namespace barcode {
             DataPreprocessor::SmoothenResult smoothen_result = preprocessor.smoothen_inplace(data.array_ptr, data.size);
             uint32_t smoothen =  time_us_32();
             log_message(LOG_LEVEL_DEBUG, "signal smoothened");
-            if (current_log_level < LOG_LEVEL_INFO) {
+            if (current_log_level > LOG_LEVEL_INFO) {
                 for (int i = 0; i < smoothen_result.N; i++) {
                     printf("%u, ", data.array_ptr[i]);
                 }
