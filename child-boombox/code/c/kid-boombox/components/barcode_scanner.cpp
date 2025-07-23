@@ -1410,10 +1410,10 @@ namespace barcode {
                 for (uint16_t idx = 0; idx < all_bits.size(); idx++) {
                     uint16_t bit_height_diff = slice_max(data, all_bits[idx].start, all_bits[idx].end).value - slice_min(data, all_bits[idx].start, all_bits[idx].end + 1).value;
                     uint16_t bit = 0;
-                    if (bit_height_diff > int(SCALE*0.5)) {
+                    if (bit_height_diff <= int(SCALE*0.5)) {
                         bit = 1;
                     }
-                    if (bit != 1 && (idx == 0 || idx == 1)) {
+                    if (bit != 0 && (idx == 0 || idx == 1)) {
                         return -1;
                     }
                     if (bit == 1) {
