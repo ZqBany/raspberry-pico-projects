@@ -284,11 +284,18 @@ namespace audio {
                 return true;
             }
 
-            WavReader::wav_header_t* get_opened_header() {
+            int get_channels_number() {
                 if (!file_is_open) {
-                    return NULL;
+                    return -1;
                 }
-                return wav_header;
+                return wav_header->num_channels;
+            }
+
+            int get_audio_bytes() {
+                if (!file_is_open) {
+                    return -1;
+                }
+                return wav_header->data_size;
             }
 
             bool is_file_opened() {
@@ -337,6 +344,7 @@ namespace audio {
             audio::AUDIO_VOLUME VOL = audio::VOL_100;
             audio_buffer_pool *buffer_pool;
             SDReader sd_reader;
+            FSIZE_t bytes_played = 0;
 
             void init_audio() {
                 printf("Variables %d %d %d %d\n", PICO_AUDIO_I2S_DATA_PIN, PICO_AUDIO_I2S_CLOCK_PIN_BASE, PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED, AUDIO_SHUTDOWN_PIN);
@@ -447,6 +455,7 @@ namespace audio {
                 bool opened = sd_reader.open_audio_file(filename);
                 if (opened) {
                     audio_i2s_set_enabled(true);
+                    bytes_played = 0;
                 }
                 return opened;
             }
@@ -456,6 +465,7 @@ namespace audio {
                 bool success = sd_reader.rewind_opened_file_to_audio_beginning();
                 if (success) {
                     audio_i2s_set_enabled(true);
+                    bytes_played = 0;
                 }
                 return success;
             }
@@ -465,30 +475,39 @@ namespace audio {
                     printf("Warning: Trying to play next chunk without opened file\n");
                     return play_result_t { false, false };
                 }
-                struct audio_buffer *buffer = take_audio_buffer(buffer_pool, blocking);
-                if (buffer != NULL) {
-                    uint16_t num_channels = sd_reader.get_opened_header()->num_channels;
-                    int16_t *samples = (int16_t *) buffer->buffer->bytes;
-                    UINT bytes_TO_read = buffer->max_sample_count * sizeof(int16_t) * num_channels;
-                    UINT bytes_read = sd_reader.fill_buffer(samples, bytes_TO_read);
-                    if (bytes_read > 0) {
-                        buffer->sample_count = bytes_read / (sizeof(int16_t) * num_channels);
-                        adjust_volume(samples, buffer->sample_count, num_channels);
-                    } else {
-                        audio_i2s_set_enabled(false);
-                        buffer->sample_count = 0;
-                    }
-                    give_audio_buffer(buffer_pool, buffer);
+                FSIZE_t bytes_remaining = sd_reader.get_audio_bytes() - bytes_played;
+                if (bytes_remaining > 0) {
+                    struct audio_buffer *buffer = take_audio_buffer(buffer_pool, blocking);
+                    if (buffer != NULL) {
+                        uint16_t num_channels = sd_reader.get_channels_number();
+                        int16_t *samples = (int16_t *) buffer->buffer->bytes;
+                        UINT bytes_TO_read = buffer->max_sample_count * sizeof(int16_t) * num_channels;
+                        UINT bytes_TO_read_limited = (bytes_TO_read <= bytes_remaining) ? bytes_TO_read : (UINT) bytes_remaining;
+                        UINT bytes_read = sd_reader.fill_buffer(samples, bytes_TO_read_limited);
+                        if (bytes_read > 0) {
+                            buffer->sample_count = bytes_read / (sizeof(int16_t) * num_channels);
+                            adjust_volume(samples, buffer->sample_count, num_channels);
+                            bytes_played = bytes_played + bytes_read;
+                            bytes_remaining = sd_reader.get_audio_bytes() - bytes_played;
+                        } else {
+                            audio_i2s_set_enabled(false);
+                            buffer->sample_count = 0;
+                        }
+                        give_audio_buffer(buffer_pool, buffer);
 
-                    if (bytes_read < bytes_TO_read) {
-                        audio_i2s_set_enabled(false);
-                        sd_reader.close_file();
-                        return play_result_t { false, true };
-                    }
+                        if (bytes_read < bytes_TO_read_limited || bytes_remaining <= 0) {
+                            if (bytes_remaining > 0) {
+                                printf("Warning: File ended before audio_bytes read\n");
+                            }
+                            audio_i2s_set_enabled(false);
+                            sd_reader.close_file();
+                            return play_result_t { false, true };
+                        }
 
-                    return play_result_t { true, true };
+                        return play_result_t { bytes_remaining > 0, true };
+                    }
                 }
-                return play_result_t { true, false };
+                return play_result_t { bytes_remaining > 0, false };
             }
 
             void play_whole_file() {
