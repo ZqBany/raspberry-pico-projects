@@ -36,6 +36,7 @@ namespace audio
 
     void initialize_module(AUDIO_VOLUME saved_volume);
     void deinitialize_module();
+    bool file_exists(char *filename);
     bool open_file(char *filename);
     bool rewind_to_audio_beginning();
     play_result_t play_next_chunk(bool blocking);

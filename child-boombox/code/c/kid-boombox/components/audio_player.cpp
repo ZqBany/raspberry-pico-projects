@@ -239,6 +239,16 @@ namespace audio {
                 sleep_ms(10);
             }
 
+            bool file_exists(char *filename) {
+                FRESULT fr;
+                FILINFO fno;
+                fr = f_stat(filename, &fno);
+                if (fr == FR_OK) {
+                    return true;
+                }
+                return false;
+            }
+
             bool open_audio_file(char *filename) {
                 FRESULT fr;
                 if (file_is_open) {
@@ -451,6 +461,10 @@ namespace audio {
                 return is_edge_volume(VOL);
             }
 
+            bool file_exists(char *filename) {
+                return sd_reader.file_exists(filename);
+            }
+
             bool open_audio_file(char *filename) {
                 bool opened = sd_reader.open_audio_file(filename);
                 if (opened) {
@@ -536,6 +550,10 @@ namespace audio {
         i2s_sd_audio_player.deinit();
 
         sleep_ms(5);
+    }
+
+    bool file_exists(char *filename) {
+        return i2s_sd_audio_player.file_exists(filename);
     }
 
     bool open_file(char *filename) {

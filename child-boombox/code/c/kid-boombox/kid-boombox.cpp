@@ -199,7 +199,8 @@ class Core1Executor {
             SUCCESS = -2,
             HELLO = -3,
             BYE = -4,
-            LOW_BATTERY = -5
+            LOW_BATTERY = -5,
+            MISSING_CARD_FILE = -6
         };
     private:
         enum Job {
@@ -216,18 +217,29 @@ class Core1Executor {
         volatile uint32_t last_busy;
         bool low_battery;
 
+        bool fill_msg_filename(int file_id) {
+            switch(file_id){
+                case INSERT_CARD: strncpy(filename, "insert_card.wav", 50); break;
+                case SUCCESS: strncpy(filename, "success.wav", 50); break;
+                case HELLO: strncpy(filename, "hello.wav", 50); break;
+                case BYE: strncpy(filename, "bye.wav", 50); break;
+                case LOW_BATTERY: strncpy(filename, "low_battery.wav", 50); break;
+                case MISSING_CARD_FILE: strncpy(filename, "missing_file.wav", 50); break;
+                default: return false;
+            }
+            return true;
+        }
+
         bool open_audio_file(int *file_id, char *filename) {
             if (CORE_1_STATE.REQUESTED_FILE_ID > 0) {
                 sprintf(filename, "%i.wav", CORE_1_STATE.REQUESTED_FILE_ID);
             } else {
-                switch(CORE_1_STATE.REQUESTED_FILE_ID){
-                    case INSERT_CARD: strncpy(filename, "insert_card.wav", 50); break;
-                    case SUCCESS: strncpy(filename, "success.wav", 50); break;
-                    case HELLO: strncpy(filename, "hello.wav", 50); break;
-                    case BYE: strncpy(filename, "bye.wav", 50); break;
-                    case LOW_BATTERY: strncpy(filename, "low_battery.wav", 50); break;
-                    default: return false;
+                if (!fill_msg_filename(CORE_1_STATE.REQUESTED_FILE_ID)) {
+                    return false;
                 }
+            }
+            if (!audio::file_exists(filename)) {
+                fill_msg_filename(MISSING_CARD_FILE);
             }
             bool success = audio::open_file(filename);
             if (success) {
