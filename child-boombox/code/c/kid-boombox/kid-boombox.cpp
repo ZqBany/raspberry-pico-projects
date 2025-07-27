@@ -27,8 +27,6 @@
 
 #define STATUS_LED_MS 100
 
-#define DORMANT_BATTERY_VOLTAGE 3.2f // voltage that will cause device to not wake up but immediately entering dormant mode without wake up handling
-
 #define WAIT_FOR_USB_STUDIO_ON_STARTUP false
 
 static audio::AUDIO_VOLUME SAVED_VOL = audio::VOL_100;
@@ -200,7 +198,8 @@ class Core1Executor {
             INSERT_CARD = -1 ,
             SUCCESS = -2,
             HELLO = -3,
-            BYE = -4
+            BYE = -4,
+            LOW_BATTERY = -5
         };
     private:
         enum Job {
@@ -215,6 +214,7 @@ class Core1Executor {
         char file_pattern[50];
         char filename[50];
         volatile uint32_t last_busy;
+        bool low_battery;
 
         bool open_audio_file(int *file_id, char *filename) {
             if (CORE_1_STATE.REQUESTED_FILE_ID > 0) {
@@ -225,6 +225,7 @@ class Core1Executor {
                     case SUCCESS: strncpy(filename, "success.wav", 50); break;
                     case HELLO: strncpy(filename, "hello.wav", 50); break;
                     case BYE: strncpy(filename, "bye.wav", 50); break;
+                    case LOW_BATTERY: strncpy(filename, "low_battery.wav", 50); break;
                     default: return false;
                 }
             }
@@ -254,7 +255,7 @@ class Core1Executor {
         }
 
         void play_hello_msg() {
-            CORE_1_STATE.REQUESTED_FILE_ID = HELLO;
+            CORE_1_STATE.REQUESTED_FILE_ID = low_battery ? LOW_BATTERY : HELLO;
             if (open_audio_file(&file_id, filename)) {
                 audio::blocking_play_whole_file();
                 printf("[Core#1] End hello msg\n");
@@ -302,6 +303,7 @@ class Core1Executor {
         }
 
     public:
+        Core1Executor(): low_battery(false) {}
         // CORE 1
         void main() {
             initialize();
@@ -422,6 +424,10 @@ class Core1Executor {
         bool reached_sleep_timeout() {
             return CORE_1_STATE.FULL_IDLE;
         }
+
+        void set_low_battery() {
+            low_battery = true;
+        }
 };
 
 Core1Executor::State Core1Executor::CORE_1_STATE;
@@ -532,14 +538,14 @@ class DormantSleepHelper {
         }
 };
 
-void enter_dormant_sleep_if_low_battery() {
-    const float empty_battery = DORMANT_BATTERY_VOLTAGE;
+bool enter_dormant_sleep_if_low_battery() {
     const float vsys_voltage = voltage_reader::vsys_voltage();
     printf("VSYS voltage: %.2f V\n", vsys_voltage);
-    if (vsys_voltage <= empty_battery) {
+    if (vsys_voltage <= voltage_reader::critically_low_battery()) {
         printf("Battery low - enter dormant mode");
         DormantSleepHelper::enter_emergency_dormant();
     }
+    return vsys_voltage < voltage_reader::low_battery();
 }
 
 int main()
@@ -550,7 +556,10 @@ int main()
     while (WAIT_FOR_USB_STUDIO_ON_STARTUP && !stdio_usb_connected()) { sleep_ms(10); } // wait for monitor to connect
 
     voltage_reader::initialize_module();
-    enter_dormant_sleep_if_low_battery();
+    bool low_battery = enter_dormant_sleep_if_low_battery();
+    if (low_battery) {
+        core1Executor.set_low_battery();
+    }
 
     barcode::initialize_module();
     sleep_ms(5);

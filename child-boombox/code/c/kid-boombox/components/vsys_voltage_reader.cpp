@@ -33,4 +33,19 @@ namespace voltage_reader
     float vsys_voltage() {
         return vsys_voltage_reader.vsys_voltage();
     }
+
+    float low_battery() {
+        return critically_low_battery() + 0.1f;
+    }
+
+    float critically_low_battery() {
+        if (battery == SINGLE_USE) {
+            return single_use_low_voltage;
+        }
+        return rechargable_low_voltage;
+    }
+
+    bool is_critically_low_battery() {
+        return vsys_voltage() < critically_low_battery();
+    }
 }
