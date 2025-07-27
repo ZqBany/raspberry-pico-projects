@@ -13,7 +13,7 @@ namespace barcode
 {
     void initialize_module();
     void deinitialize_module();
-    void initialize_baseline();
+    bool initialize_baseline();
     bool wait_for_missing_card();
     bool wait_for_card();
     int read_barcode();

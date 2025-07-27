@@ -561,7 +561,17 @@ int main()
     multicore_launch_core1(run_core_1_executor);
     sleep_ms(50);
 
-    barcode::initialize_baseline();
+    uint8_t timeout_cnt = 0;
+    while(barcode::initialize_baseline()) {
+        if (timeout_cnt > 60) {
+            if (DormantSleepHelper::enter_sleep_if_both_cores_ready()) {
+                timeout_cnt = 0;
+            }
+        } else {
+            // should never happen for now
+            timeout_cnt++;
+        }
+    }
 
     while (!core1Executor.is_ready()) {
         sleep_ms(25);
@@ -571,7 +581,7 @@ int main()
     printf("system initialized\n");
     
     while(true) {
-        uint8_t timeout_cnt = 0;
+        timeout_cnt = 0;
         while(barcode::wait_for_missing_card()) {
             if (timeout_cnt > 60) {
                 if (DormantSleepHelper::enter_sleep_if_both_cores_ready()) {

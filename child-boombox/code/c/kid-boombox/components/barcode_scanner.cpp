@@ -592,7 +592,8 @@ namespace barcode {
                 return baseline == -1;
             }
 
-            void determine_baseline() {
+            bool determine_baseline() {
+                uint32_t start = time_us_32();
                 uint16_t min = UINT16_T_MAX;
                 // qtr_decoder._led_on();
                 while (min > 500 || min < 200) {
@@ -604,6 +605,9 @@ namespace barcode {
                         }
                         sleep_ms(10);
                     }
+                    if (time_us_32() - start > FUNC_TIMEOUT_US) {
+                        return true;
+                    }
                     sleep_ms(100);
                 }
                 
@@ -613,6 +617,7 @@ namespace barcode {
                 char str[50];
                 sprintf(str, "baseline determined %d", baseline);
                 log_message(LOG_LEVEL_INFO, str);
+                return false;
             }
 
             bool wait_for_card_not_present() {
@@ -700,11 +705,12 @@ namespace barcode {
             }
 
         public:
-             void initialize_baseline() {
+             bool initialize_baseline() {
                 //qtr_decoder.led_on();
                 if (baseline_undefined()) {
-                    determine_baseline();
+                    return determine_baseline();
                 }
+                return false;
                 //qtr_decoder.reset_led();
             }
 
@@ -1488,8 +1494,8 @@ namespace barcode {
         qtr_decoder.deinit();
     }
 
-    void initialize_baseline() {
-        gatherer.initialize_baseline();
+    bool initialize_baseline() {
+        return gatherer.initialize_baseline();
     }
 
     bool wait_for_missing_card() {
