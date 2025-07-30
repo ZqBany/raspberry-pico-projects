@@ -4,6 +4,7 @@
 #include "pico/multicore.h"
 #include "components/barcode_scanner.h"
 #include "components/audio_player.h"
+#include "components/sd_handler.h"
 #include "components/pico_flash_storage.h"
 #include "components/vsys_voltage_reader.h"
 #include "hardware/pio.h"
@@ -238,7 +239,7 @@ class Core1Executor {
                     return false;
                 }
             }
-            if (!audio::file_exists(filename)) {
+            if (!sd_handler::file_exists(filename)) {
                 fill_msg_filename(MISSING_CARD_FILE);
             }
             bool success = audio::open_file(filename);
@@ -253,6 +254,10 @@ class Core1Executor {
             audio::AUDIO_VOLUME new_vol = audio::current_volume();
             printf("[Core#1] Change volume: 0x%04x (%d %%) -> %04x (%d %%)\n", old_vol, 100*old_vol/audio::VOL_100, new_vol, 100*new_vol/audio::VOL_100);
             LEDHelper::blink_status_led(audio::is_current_volume_edge_volume() ? 2 : 1);
+        }
+
+        void init_sd_module() {
+            sd_handler::initialize_module();
         }
 
         void init_audio_module() {
@@ -288,6 +293,7 @@ class Core1Executor {
             job = IDLE;
             file_id = 0;
             last_busy = time_us_32();
+            init_sd_module();
             init_audio_module();
             play_hello_msg();
             CORE_1_STATE.READY = true;
@@ -296,6 +302,7 @@ class Core1Executor {
         void deinitialize() {
             play_bye_msg();
             audio::deinitialize_module();
+            sd_handler::deinitialize_module();
         }
 
         bool not_terminated() {

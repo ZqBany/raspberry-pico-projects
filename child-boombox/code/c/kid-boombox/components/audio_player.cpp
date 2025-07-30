@@ -1,15 +1,11 @@
-#include <vector>
-#include "audio_player.h"
-#include "pico/stdlib.h"
-#include "sd_card.h"
-#include "SPI/sd_card_spi.h"
-#include "ff.h"
-#include "f_util.h"
-#include "hw_config.h"
-#include "pico/audio_i2s.h"
-#include "my_rtc.h"
 
-#define R1_IDLE_STATE 1 << 0 // sc_card_spi.c -> spi_r1_response_t
+#include <stdio.h>
+#include <string.h>
+#include "audio_player.h"
+#include "sd_handler.h"
+#include "pico/stdlib.h"
+#include "pico/audio_i2s.h"
+#include "hardware/dma.h"
 
 namespace audio {
     const AUDIO_VOLUME VOLUME_VALUES[] = {VOL_100, VOL_80, VOL_60, VOL_40, VOL_20};
@@ -59,11 +55,9 @@ namespace audio {
             WavReader() {}
 
              // Odczyt nagłówka pliku WAV
-            wav_read_result read_wav_header(FIL* file) {
-                UINT bytes_read;
-                FRESULT fr = f_read(file, &wav_header, sizeof(wav_header_t), &bytes_read);
-                
-                if (fr != FR_OK || bytes_read != sizeof(wav_header_t)) {
+            wav_read_result read_wav_header(sd_handler::sd_file_t* file) {
+                size_t bytes_read = sd_handler::read_struct<wav_header_t>(file, &wav_header);
+                if (bytes_read != sizeof(wav_header_t)) {
                     printf("Error reading WAV header\n");
                     return FAILED_RESULT;
                 }
@@ -86,13 +80,13 @@ namespace audio {
                 if (memcmp(wav_header.data_header, "data", 4) != 0) {
                     if (memcmp(wav_header.data_header, "LIST", 4) == 0) {
                         wav_section_t next_section_header;
-                        fr = f_lseek(file, f_tell(file) + wav_header.data_size);
-                        if (fr != FR_OK) {
+                        bool success = sd_handler::seek_file_position(file, sd_handler::current_file_position(file) + wav_header.data_size);
+                        if (!success) {
                             printf("Incorrect WAV format - cannot seek after LIST section\n");
                             return FAILED_RESULT;
                         }
-                        fr = f_read(file, &next_section_header, sizeof(wav_section_t), &bytes_read);
-                        if (fr != FR_OK || bytes_read != sizeof(wav_section_t)) {
+                        bytes_read = sd_handler::read_struct<wav_section_t>(file, &next_section_header);
+                        if (bytes_read != sizeof(wav_section_t)) {
                             printf("Error reading WAV data header\n");
                             return FAILED_RESULT;
                         }
@@ -146,215 +140,18 @@ namespace audio {
     };
 
     const WavReader::wav_read_result WavReader::FAILED_RESULT = { false, nullptr };
-    // void add_spi(spi_t *const spi);
-    // void add_spi_if(sd_spi_if_t *const spi_if);
-    // void add_sd_card(sd_card_t *const sd_card);
-
-    class SDReader {
-        private:
-            static std::vector<spi_t *> spis;             // SPI H/W components
-            static std::vector<sd_spi_if_t *> spi_ifs;    // SPI Interfaces
-            static spi_t *p_spi;
-            static FATFS fs;
-            FIL opened_file;
-            char opened_filename[50];
-            static bool file_is_open;
-            FSIZE_t audio_beginning;
-            WavReader::wav_header_t *wav_header;
-            WavReader wav_reader;
-
-        public:
-            static std::vector<sd_card_t *> sd_cards;     // SD Card Sockets
-
-            SDReader(): wav_reader() {}
-
-            int sd_card_init() {
-                time_init();
-                sleep_ms(25);
-
-                spi_t *spi_p = new spi_t();
-                assert(spi_p);
-                spi_p->hw_inst = spi0;  // RP2040 SPI component
-                spi_p->sck_gpio = SD_SCK_PIN;    // GPIO number (not Pico pin number)
-                spi_p->mosi_gpio = SD_MOSI_PIN;
-                spi_p->miso_gpio = SD_MISO_PIN;
-                spi_p->set_drive_strength = true;
-                spi_p->mosi_gpio_drive_strength = GPIO_DRIVE_STRENGTH_4MA;
-                spi_p->sck_gpio_drive_strength = GPIO_DRIVE_STRENGTH_2MA;
-                spi_p->baud_rate = 12 * 1000 * 1000;  // Actual frequency: 10416666
-                spis.push_back(spi_p);
-
-                sd_spi_if_t *spi_if_p = new sd_spi_if_t();
-                assert(spi_if_p);
-
-                spi_if_p->spi = spi_p;  // Pointer to the SPI driving this card
-                spi_if_p->ss_gpio = SD_CS_PIN;    // The SPI slave select GPIO for this SD card
-                spi_ifs.push_back(spi_if_p);
-
-                sd_card_t *sd_card_p = new sd_card_t();
-                assert(sd_card_p);
-                sd_card_p->type = SD_IF_SPI;
-                sd_card_p->spi_if_p = spi_if_p;  // Pointer to the SPI interface driving this card
-                sd_card_p->use_card_detect = false;
-                sd_card_p->card_detect_gpio = 0;
-                sd_card_p->card_detected_true = -1;  // What the GPIO read returns when a card is present
-                sd_card_p->card_detect_use_pull = false;
-                sd_card_p->card_detect_pull_hi = false;
-                sd_cards.push_back(sd_card_p);
-
-                printf("Init SD card driver\n");
-                sd_init_driver();
-
-                sd_card_t *pSD = sd_get_by_num(0);
-                char const * const drive_prefix = sd_get_drive_prefix(pSD);
-                printf("Trying to mount drive [%s]\n", drive_prefix);
-                FRESULT fr = f_mount(&pSD->state.fatfs, drive_prefix, 1);
-                if (fr != FR_OK) {
-                    printf("Error: mounting SD card drive failed %s (%d)\n", FRESULT_str(fr), fr);
-                    return false;
-                }
-                fr = f_chdrive(drive_prefix);
-                if (fr != FR_OK) {
-                    printf("Error: cannot change SD card drive %s (%d)\n", FRESULT_str(fr), fr);
-                    return false;
-                }
-
-                printf("SD card mounted successfully\n");
-                return PICO_OK;
-            }
-
-            void sd_card_deinit() {
-                sd_card_t *pSD = sd_get_by_num(0);
-                char const * const drive_prefix = sd_get_drive_prefix(pSD);
-                FRESULT fr = f_unmount(drive_prefix);
-                if (fr != FR_OK) {
-                    printf("Error: unmounting SD card drive failed %s (%d)\n", FRESULT_str(fr), fr);
-                }
-                pSD->state.mounted = false;
-                pSD->state.m_Status |= STA_NOINIT;
-                uint32_t result = sd_go_idle_state(pSD);
-                if (R1_IDLE_STATE == result) {
-                    printf("SD card put to idle successfully: [%s]\n", drive_prefix);
-                }
-                sleep_ms(10);
-            }
-
-            bool file_exists(char *filename) {
-                FRESULT fr;
-                FILINFO fno;
-                fr = f_stat(filename, &fno);
-                if (fr == FR_OK) {
-                    return true;
-                }
-                return false;
-            }
-
-            bool open_audio_file(char *filename) {
-                FRESULT fr;
-                if (file_is_open) {
-                    f_close(&opened_file);
-                    file_is_open = false;
-                }
-                fr = f_open(&opened_file, filename, FA_READ | FA_OPEN_EXISTING);
-                if (fr != FR_OK) {
-                    printf("Error: cannot open file %s:  %s (%d)\n", filename, FRESULT_str(fr), fr);
-                    return false;
-                }
-                file_is_open = true;
-                // Odczytaj nagłówek WAV
-                WavReader::wav_read_result result = wav_reader.read_wav_header(&opened_file);
-                if (!result.success) {
-                    f_close(&opened_file);
-                    file_is_open = false;
-                    return false;
-                }
-                wav_header = result.wav_header;
-                if (wav_header->sample_rate != audio_format.sample_freq) {
-                    printf("Warning: Sample rate mismatch - reconfigure I2S\n");
-                    f_close(&opened_file);
-                    file_is_open = false;
-                    return false;
-                }
-                strncpy(opened_filename, filename, 50);
-                audio_beginning = f_tell(&opened_file);
-                return true;
-            }
-
-            bool rewind_opened_file_to_audio_beginning() {
-                if (!is_file_opened()) {
-                    printf("Warning: Trying to rewind file without opened file\n");
-                    return false;
-                }
-                FRESULT fr = f_lseek(&opened_file, audio_beginning);
-                if (fr != FR_OK) {
-                    printf("Error: cannot seek to file start %s: %s (%d)\n", opened_filename, FRESULT_str(fr), fr);
-                    close_file();
-                    return false;
-                }
-                return true;
-            }
-
-            int get_channels_number() {
-                if (!file_is_open) {
-                    return -1;
-                }
-                return wav_header->num_channels;
-            }
-
-            int get_audio_bytes() {
-                if (!file_is_open) {
-                    return -1;
-                }
-                return wav_header->data_size;
-            }
-
-            bool is_file_opened() {
-                return file_is_open;
-            }
-
-            UINT fill_buffer(int16_t *buffer, UINT bytes_to_read) {
-                FRESULT fr;
-                UINT bytes_read;
-                if (!file_is_open) {
-                    printf("Warning: Tried to fill buffer without opened file\n");
-                    return 0;
-                }
-                fr = f_read(&opened_file,
-                            buffer,
-                            bytes_to_read,
-                            &bytes_read);
-
-                if (fr != FR_OK) {
-                    f_close(&opened_file);
-                    file_is_open = false;
-                    printf("Error: while reading file %s: %s (%d)", opened_filename, FRESULT_str(fr), fr);
-                    return 0;
-                }
-
-                return bytes_read;
-            }
-
-            bool close_file() {
-                if (file_is_open) {
-                    f_close(&opened_file);
-                    file_is_open = false;
-                    return true;
-                }
-                return false;
-            }
-    };
-
-    bool SDReader::file_is_open = false;
-    std::vector<spi_t *> audio::SDReader::spis = {};
-    std::vector<sd_spi_if_t *> audio::SDReader::spi_ifs = {};
-    std::vector<sd_card_t *> audio::SDReader::sd_cards = {};
 
     class I2SAudioPlayer {
         private:
             audio::AUDIO_VOLUME VOL = audio::VOL_100;
             audio_buffer_pool *buffer_pool;
-            SDReader sd_reader;
-            FSIZE_t bytes_played = 0;
+            size_t bytes_played;
+            size_t audio_beginning;
+            sd_handler::sd_file_t* opened_file;
+            char opened_filename[50];
+            static bool file_is_open;
+            WavReader::wav_header_t *wav_header;
+            WavReader wav_reader;
 
             void init_audio() {
                 printf("Variables %d %d %d %d\n", PICO_AUDIO_I2S_DATA_PIN, PICO_AUDIO_I2S_CLOCK_PIN_BASE, PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED, AUDIO_SHUTDOWN_PIN);
@@ -401,20 +198,30 @@ namespace audio {
                 audio_i2s_set_enabled(false);
                 gpio_put(AUDIO_SHUTDOWN_PIN, false);
             }
+
+            int get_channels_number() {
+                if (!file_is_open) {
+                    return -1;
+                }
+                return wav_header->num_channels;
+            }
+
+            int get_audio_bytes() {
+                if (!file_is_open) {
+                    return -1;
+                }
+                return wav_header->data_size;
+            }
         public:
-            I2SAudioPlayer(): sd_reader() {}
+            I2SAudioPlayer(): bytes_played(0) {}
 
             void initialize(AUDIO_VOLUME saved_volume) {
                 VOL = saved_volume;
                 init_audio();
                 sleep_ms(5);
-
-                int rc = sd_reader.sd_card_init();
-                hard_assert(rc == PICO_OK);
             }
 
             void deinit() {
-                sd_reader.sd_card_deinit();
                 deinit_audio();
             }
 
@@ -462,11 +269,36 @@ namespace audio {
             }
 
             bool file_exists(char *filename) {
-                return sd_reader.file_exists(filename);
+                return sd_handler::file_exists(filename);
             }
 
             bool open_audio_file(char *filename) {
-                bool opened = sd_reader.open_audio_file(filename);
+                if (file_is_open) {
+                    sd_handler::close_file(opened_file);
+                    file_is_open = false;
+                }
+                bool opened = sd_handler::open_file_for_read(filename, opened_file);
+                if (!opened) {
+                    return false;
+                }
+                file_is_open = true;
+                // Odczytaj nagłówek WAV
+                WavReader::wav_read_result result = wav_reader.read_wav_header(opened_file);
+                if (!result.success) {
+                    sd_handler::close_file(opened_file);
+                    file_is_open = false;
+                    return false;
+                }
+                wav_header = result.wav_header;
+                if (wav_header->sample_rate != audio_format.sample_freq) {
+                    printf("Warning: Sample rate mismatch - reconfigure I2S\n");
+                    sd_handler::close_file(opened_file);
+                    file_is_open = false;
+                    return false;
+                }
+                strncpy(opened_filename, filename, 50);
+                audio_beginning = sd_handler::current_file_position(opened_file);
+                return true;
                 if (opened) {
                     audio_i2s_set_enabled(true);
                     bytes_played = 0;
@@ -475,34 +307,41 @@ namespace audio {
             }
 
             bool rewind_opened_file() {
+                if (!file_is_open) {
+                    printf("Warning: Trying to rewind file without opened file\n");
+                    return false;
+                }
                 audio_i2s_set_enabled(false);
-                bool success = sd_reader.rewind_opened_file_to_audio_beginning();
+                bool success = sd_handler::seek_file_position(opened_file, audio_beginning);
                 if (success) {
                     audio_i2s_set_enabled(true);
                     bytes_played = 0;
+                } else {
+                    sd_handler::close_file(opened_file);
+                    file_is_open = false;
                 }
                 return success;
             }
 
             play_result_t play_next_chunk(bool blocking) {
-                if (!sd_reader.is_file_opened()) {
+                if (!file_is_open) {
                     printf("Warning: Trying to play next chunk without opened file\n");
                     return play_result_t { false, false };
                 }
-                FSIZE_t bytes_remaining = sd_reader.get_audio_bytes() - bytes_played;
+                size_t bytes_remaining = get_audio_bytes() - bytes_played;
                 if (bytes_remaining > 0) {
                     struct audio_buffer *buffer = take_audio_buffer(buffer_pool, blocking);
                     if (buffer != NULL) {
-                        uint16_t num_channels = sd_reader.get_channels_number();
+                        uint16_t num_channels = get_channels_number();
                         int16_t *samples = (int16_t *) buffer->buffer->bytes;
-                        UINT bytes_TO_read = buffer->max_sample_count * sizeof(int16_t) * num_channels;
-                        UINT bytes_TO_read_limited = (bytes_TO_read <= bytes_remaining) ? bytes_TO_read : (UINT) bytes_remaining;
-                        UINT bytes_read = sd_reader.fill_buffer(samples, bytes_TO_read_limited);
+                        size_t bytes_TO_read = buffer->max_sample_count * sizeof(int16_t) * num_channels;
+                        size_t bytes_TO_read_limited = (bytes_TO_read <= bytes_remaining) ? bytes_TO_read : bytes_remaining;
+                        size_t bytes_read = sd_handler::fill_buffer(opened_file, samples, bytes_TO_read_limited);
                         if (bytes_read > 0) {
                             buffer->sample_count = bytes_read / (sizeof(int16_t) * num_channels);
                             adjust_volume(samples, buffer->sample_count, num_channels);
                             bytes_played = bytes_played + bytes_read;
-                            bytes_remaining = sd_reader.get_audio_bytes() - bytes_played;
+                            bytes_remaining = get_audio_bytes() - bytes_played;
                         } else {
                             audio_i2s_set_enabled(false);
                             buffer->sample_count = 0;
@@ -514,7 +353,8 @@ namespace audio {
                                 printf("Warning: File ended before audio_bytes read\n");
                             }
                             audio_i2s_set_enabled(false);
-                            sd_reader.close_file();
+                            sd_handler::close_file(opened_file);
+                            file_is_open = false;
                             return play_result_t { false, true };
                         }
 
@@ -525,17 +365,20 @@ namespace audio {
             }
 
             void play_whole_file() {
-                if (sd_reader.is_file_opened()) {
+                if (file_is_open) {
                     while(play_next_chunk(true).next_chunk_available) {}
                 }   
             }
 
             bool close_audio_file() {
                 audio_i2s_set_enabled(false);
-                return sd_reader.close_file();
+                bool sucess = sd_handler::close_file(opened_file);
+                file_is_open = false;
+                return sucess;
             }            
     };
 
+    bool I2SAudioPlayer::file_is_open = false;
     static I2SAudioPlayer i2s_sd_audio_player = I2SAudioPlayer();
 
     void initialize_module(AUDIO_VOLUME saved_volume) {
@@ -586,15 +429,5 @@ namespace audio {
 
     bool is_current_volume_edge_volume() {
         return i2s_sd_audio_player.is_current_vol_edge_volume();
-    }
-}
-
-size_t sd_get_num() { return audio::SDReader::sd_cards.size(); }
-
-sd_card_t *sd_get_by_num(size_t num) {
-    if (num <= sd_get_num()) {
-        return audio::SDReader::sd_cards[num];
-    } else {
-        return NULL;
     }
 }

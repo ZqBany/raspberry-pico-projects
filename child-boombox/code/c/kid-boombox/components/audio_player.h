@@ -3,12 +3,6 @@
 
 #include "pico/audio_i2s.h"
 
-#define SD_SPI_PORT spi0
-#define SD_CS_PIN 17
-#define SD_SCK_PIN 18
-#define SD_MOSI_PIN 19
-#define SD_MISO_PIN 16
-
 #define SAMPLES_PER_BUFFER 512
 #define AUDIO_I2S_DMA_CHANNEL 0
 #define AUDIO_SHUTDOWN_PIN 21 // Connected via 470kOhm resistor to MAX98357A2 SD pin
@@ -36,7 +30,6 @@ namespace audio
 
     void initialize_module(AUDIO_VOLUME saved_volume);
     void deinitialize_module();
-    bool file_exists(char *filename);
     bool open_file(char *filename);
     bool rewind_to_audio_beginning();
     play_result_t play_next_chunk(bool blocking);

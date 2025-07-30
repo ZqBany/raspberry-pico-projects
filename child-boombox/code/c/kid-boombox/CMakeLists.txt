@@ -40,7 +40,8 @@ add_executable(kid-boombox
         components/barcode_scanner.cpp
         components/audio_player.cpp
         components/pico_flash_storage.cpp
-        components/vsys_voltage_reader.cpp 
+        components/vsys_voltage_reader.cpp
+        components/sd_handler.cpp  
         kid-boombox.cpp)
 
 add_subdirectory(lib/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico/src build)
