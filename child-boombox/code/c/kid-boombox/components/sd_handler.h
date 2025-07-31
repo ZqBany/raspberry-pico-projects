@@ -16,12 +16,12 @@ namespace sd_handler
     void initialize_module();
     void deinitialize_module();
     bool file_exists(char *filename);
-    bool open_file_for_read(char *filename, sd_file_t* file);
+    bool open_file_for_read(char *filename, sd_file_t*& file);
     size_t current_file_position(sd_file_t* file);
     bool seek_file_position(sd_file_t* file, size_t file_pointer);
     size_t fill_buffer(sd_file_t* file, int16_t *buffer, size_t bytes_to_read);
     size_t read_bytes(sd_file_t* file, void* buffer, size_t bytes_to_read);
-    bool close_file(sd_file_t* file);
+    bool close_file(sd_file_t*& file);
     
     template <typename T>
     size_t read_struct(sd_file_t* file, T* struct_to_fill) {

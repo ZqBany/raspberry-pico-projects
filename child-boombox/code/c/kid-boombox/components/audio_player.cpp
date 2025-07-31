@@ -147,7 +147,7 @@ namespace audio {
             audio_buffer_pool *buffer_pool;
             size_t bytes_played;
             size_t audio_beginning;
-            sd_handler::sd_file_t* opened_file;
+            sd_handler::sd_file_t* opened_file = nullptr;
             char opened_filename[50];
             static bool file_is_open;
             WavReader::wav_header_t *wav_header;
@@ -298,7 +298,6 @@ namespace audio {
                 }
                 strncpy(opened_filename, filename, 50);
                 audio_beginning = sd_handler::current_file_position(opened_file);
-                return true;
                 if (opened) {
                     audio_i2s_set_enabled(true);
                     bytes_played = 0;
@@ -347,7 +346,6 @@ namespace audio {
                             buffer->sample_count = 0;
                         }
                         give_audio_buffer(buffer_pool, buffer);
-
                         if (bytes_read < bytes_TO_read_limited || bytes_remaining <= 0) {
                             if (bytes_remaining > 0) {
                                 printf("Warning: File ended before audio_bytes read\n");
@@ -365,9 +363,11 @@ namespace audio {
             }
 
             void play_whole_file() {
+                audio_i2s_set_enabled(true);
                 if (file_is_open) {
                     while(play_next_chunk(true).next_chunk_available) {}
-                }   
+                }
+                audio_i2s_set_enabled(false);
             }
 
             bool close_audio_file() {

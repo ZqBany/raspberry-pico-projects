@@ -200,8 +200,7 @@ class Core1Executor {
             SUCCESS = -2,
             HELLO = -3,
             BYE = -4,
-            LOW_BATTERY = -5,
-            MISSING_CARD_FILE = -6
+            LOW_BATTERY = -5
         };
     private:
         enum Job {
@@ -225,7 +224,6 @@ class Core1Executor {
                 case HELLO: strncpy(filename, "hello.wav", 50); break;
                 case BYE: strncpy(filename, "bye.wav", 50); break;
                 case LOW_BATTERY: strncpy(filename, "low_battery.wav", 50); break;
-                case MISSING_CARD_FILE: strncpy(filename, "missing_file.wav", 50); break;
                 default: return false;
             }
             return true;
@@ -240,7 +238,7 @@ class Core1Executor {
                 }
             }
             if (!sd_handler::file_exists(filename)) {
-                fill_msg_filename(MISSING_CARD_FILE);
+                fill_msg_filename(INSERT_CARD);
             }
             bool success = audio::open_file(filename);
             if (success) {
@@ -273,7 +271,9 @@ class Core1Executor {
 
         void play_hello_msg() {
             CORE_1_STATE.REQUESTED_FILE_ID = low_battery ? LOW_BATTERY : HELLO;
+            printf("[Core#1] Opening hello file\n");
             if (open_audio_file(&file_id, filename)) {
+                printf("[Core#1] Start hello msg\n");
                 audio::blocking_play_whole_file();
                 printf("[Core#1] End hello msg\n");
             }
@@ -293,8 +293,9 @@ class Core1Executor {
             job = IDLE;
             file_id = 0;
             last_busy = time_us_32();
-            init_sd_module();
             init_audio_module();
+            init_sd_module();
+            
             play_hello_msg();
             CORE_1_STATE.READY = true;
         }

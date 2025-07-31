@@ -1,10 +1,9 @@
-#include <stdio.h>
 #include <stdint.h>
-#include <string.h>
 #include <limits.h>
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include "logger.h"
 #include "barcode_scanner.h"
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -12,46 +11,10 @@
 #define FUNC_TIMEOUT_US 1'000'000 // 1 second
 
 namespace barcode {
-
-    enum LogLevel {
-        LOG_LEVEL_ERROR,
-        LOG_LEVEL_WARN,
-        LOG_LEVEL_INFO,
-        LOG_LEVEL_DEBUG,
-        LOG_LEVEL_TRACE
-    };
-
-    static LogLevel current_log_level = LOG_LEVEL_INFO;
-
-    const char *log_level_strings[] = {
-        "ERROR",
-        "WARN",
-        "INFO",
-        "DEBUG",
-        "TRACE"
-    };
-
-    void log_message(LogLevel level, const char *message) {
-        if (level > current_log_level) {
-            return;
-        }
-        printf("[%s] %s\n", log_level_strings[level], message);
+    void log_data(const char* message, uint16_t *array_ptr, uint16_t array_size) {
+        logger::Logger::log_array(logger::LOG_LEVEL_INFO, message , array_ptr, array_size);
     }
-
-    void log_message(LogLevel level, int value) {
-        if (level > current_log_level) {
-            return;
-        }
-        printf("[%s] %d\n", log_level_strings[level], value);
-    }
-
-    void log_message_32(LogLevel level, uint32_t value) {
-        if (level > current_log_level) {
-            return;
-        }
-        printf("[%s] %u\n", log_level_strings[level], (unsigned int) value);
-    }
-
+    
     class QTRDecoder {
         private:    
             uint8_t sensor_pin;
@@ -93,13 +56,13 @@ namespace barcode {
             }
             
             void reset_led() {
-                log_message(LOG_LEVEL_TRACE, "reset led");
+                LOG_TRACE("reset led");
                 gpio_put(control_pin, false);
                 sleep_us(1200);  // Note that turning the LEDs off with a >1 ms pulse and then back on resets them to full current.
             }
             
             void led_off() {
-                log_message(LOG_LEVEL_TRACE, "led off");
+                LOG_TRACE("led off");
                 last_led_off_us = time_us_32();
                 gpio_put(control_pin, false);
             }
@@ -130,10 +93,10 @@ namespace barcode {
             
             void led_on() {
                 if (false && time_us_32() - last_led_off_us <= 900) {
-                    log_message(LOG_LEVEL_TRACE, "led on via pin");
+                    LOG_TRACE("led on via pin");
                     gpio_put(control_pin, 1);
                 } else {
-                    log_message(LOG_LEVEL_TRACE, "led on via pwm dimm");
+                    LOG_TRACE("led on via pwm dimm");
                     uint32_t led_on_start = led_on_level(LED_BRIGHTNESS_LEVEL);
                     // Make sure it's been at least 300 us since the emitter pin was first set
                     // high before returning. (Driver min is 250 us.) Some time might have
@@ -159,7 +122,7 @@ namespace barcode {
                 uint16_t value = time_us_32() - start;
                 gpio_set_dir(sensor_pin, GPIO_OUT);
                 gpio_put(sensor_pin, false);
-                log_message(LOG_LEVEL_TRACE, value);
+                LOG_TRACE("%u", value);
                 return value;
             }
     };
@@ -236,9 +199,9 @@ namespace barcode {
                 for (uint8_t val_idx = 0; val_idx < buffer_filled_size; val_idx++) {
                     uint8_t index = (oldest_idx + val_idx) % size;
                     uint16_t value = buffer[index];
-                    printf("%u, ", value);
+                    LOG_INFO("%u, ", value);
                 }
-                printf("\n");
+                LOG_INFO("\n");
             }
 
             uint16_t newest() const
@@ -613,16 +576,14 @@ namespace barcode {
                 
                 // qtr_decoder._led_off();
                 baseline = min;
-                log_message(LOG_LEVEL_DEBUG, baseline);
-                char str[50];
-                sprintf(str, "baseline determined %d", baseline);
-                log_message(LOG_LEVEL_INFO, str);
+                LOG_DEBUG("%u", baseline);
+                LOG_INFO("baseline determined %d", baseline);
                 return false;
             }
 
             bool wait_for_card_not_present() {
                 //qtr_decoder.reset_led();
-                log_message(LOG_LEVEL_DEBUG, "waiting for card not present");
+                LOG_DEBUG("waiting for card not present");
                 uint8_t missing_reached_ctr = 0;
                 uint16_t value = 0;
                 uint32_t start = time_us_32();
@@ -647,7 +608,7 @@ namespace barcode {
 
             bool wait_for_card_present(uint16_t *break_value) {
                 //qtr_decoder.reset_led();
-                log_message(LOG_LEVEL_DEBUG, "waiting for card present");
+                LOG_DEBUG("waiting for card present");
                 uint16_t value = 0;
                 uint32_t start = time_us_32();
                 while (true) {
@@ -719,7 +680,6 @@ namespace barcode {
             }
 
             bool wait_for_card() {
-                char str[50];
                 uint16_t break_value = 0;
                 if(wait_for_card_present(&break_value)) {
                     return true;
@@ -728,13 +688,11 @@ namespace barcode {
                 STATE.COLLECTING = true;
                 STATE.FIRST_MINIMUM_REACHED = false;
                 multicore_fifo_push_blocking(START_COLLECTING_DATA_MSG);
-                sprintf(str, "gathering signal %d", break_value);
-                log_message(LOG_LEVEL_INFO, str);
+                LOG_INFO("gathering signal %d", break_value);
                 return false;
             }
             
             SignalData gather_raw_barcode_data() {
-                char str[50];
                 // qtr_decoder._led_on();
                 uint16_t raw_data_processed_idx = 0;
                 uint16_t last_max_extremum = UINT16_T_MAX;
@@ -758,18 +716,15 @@ namespace barcode {
                         last_sample_ts = time_us_32();
                         value = STATE.raw_data_buffer[raw_data_processed_idx];
                         if (raw_data_processed_idx == 0) {
-                            sprintf(str, "first core 1 value %d", value);
-                            log_message(LOG_LEVEL_INFO, str);
+                            LOG_INFO("first core 1 value %d", value);
                         }
                         IndexedExtremum window_extremum = window_extremum_detector.add_point(value, raw_data_processed_idx);
                         if (extrema_vec.empty()) {
                             IndexedExtremum short_window_extremum = short_window_extremum_detector.add_point(value, raw_data_processed_idx);
                             if (short_window_extremum.extremum == MAXIMUM) {
-                                sprintf(str, "AD short maxima detected %i", short_window_extremum.index);
-                                log_message(LOG_LEVEL_DEBUG, str);
+                                LOG_DEBUG("AD short maxima detected %i", short_window_extremum.index);
                             } else if (short_window_extremum.extremum == MINIMUM) {
-                                sprintf(str, "AD short minimum detected %i", short_window_extremum.index);
-                                log_message(LOG_LEVEL_DEBUG, str);
+                                LOG_DEBUG("AD short minimum detected %i", short_window_extremum.index);
                             }
                             if (window_extremum.extremum == NONE && short_window_extremum.extremum != NONE && short_window_extremum.index > 0) {
                                 extrema_vec.push_back(short_window_extremum);
@@ -778,11 +733,9 @@ namespace barcode {
                         if (window_extremum.extremum != NONE) {
                             if (window_extremum.extremum == MAXIMUM) {
                                 last_max_extremum = window_extremum.index;
-                                sprintf(str, "AD maxima detected %i", window_extremum.index);
-                                log_message(LOG_LEVEL_DEBUG, str);
+                                LOG_DEBUG("AD maxima detected %i", window_extremum.index);
                             } else {
-                                sprintf(str, "AD minimum detected %i", window_extremum.index);
-                                log_message(LOG_LEVEL_DEBUG, str);
+                                LOG_DEBUG("AD minimum detected %i", window_extremum.index);
                             }
                             if (extrema_vec.empty()) {
                                 if (window_extremum.index > 0) {
@@ -822,10 +775,10 @@ namespace barcode {
                                 }
                             }
                             maxima_counter = cnt;
-                            log_message(LOG_LEVEL_DEBUG, maxima_counter);
+                            LOG_DEBUG("%u", maxima_counter);
                         }
                         if (raw_data_processed_idx > 0 && value > baseline) {
-                            log_message(LOG_LEVEL_DEBUG, "UNEXPECTED MISSING CARD");
+                            log_data("Unexpected missing card", STATE.raw_data_buffer, raw_data_processed_idx);
                             return try_again();
                         }
                         
@@ -836,17 +789,17 @@ namespace barcode {
 
                     if (maxima_counter >= 10) {
                         if (raw_data_processed_idx - last_max_extremum > current_delay && value <= delayed_min_value) {
-                            log_message(LOG_LEVEL_DEBUG, "FOUND 10 MAXIMAS");
+                            LOG_DEBUG("FOUND 10 MAXIMAS");
                             break;
                         }
                     } else if (maxima_counter == 9) {
                         if (raw_data_processed_idx - last_max_extremum > current_delay * 2 && value <= delayed_min_value) {
-                            log_message(LOG_LEVEL_DEBUG, "FOUND 9 MAXIMAS and 2 * delay reached");
+                            LOG_DEBUG("FOUND 9 MAXIMAS and 2 * delay reached");
                             break;
                         }
                     } else if (maxima_counter == 8) {
                         if (raw_data_processed_idx - last_max_extremum > current_delay * 4 && value <= delayed_min_value) {
-                            log_message(LOG_LEVEL_DEBUG, "FOUND 8 MAXIMAS and 4 * delay reached");
+                            LOG_DEBUG("FOUND 8 MAXIMAS and 4 * delay reached");
                             break;
                         }
                     }
@@ -854,61 +807,61 @@ namespace barcode {
                     if (!timeouted) {
                         raw_data_processed_idx += 1;
                         if (raw_data_processed_idx >= STATE.MAX_SAMPLES) {
-                            log_message(LOG_LEVEL_DEBUG, "MAX SAMPLES REACHED");
+                            log_data("Max samples reached", STATE.raw_data_buffer, STATE.MAX_SAMPLES);
                             return try_again();
                         }
                     } else if (time_us_32() - last_sample_ts > 2'000'000) {
-                        log_message(LOG_LEVEL_DEBUG, "TIMEOUT REACHED");
+                        log_data("Timeout reached", STATE.raw_data_buffer, raw_data_processed_idx);
                         return try_again();
                     }
 
                     if (!STATE.RAW_GATHERER_RUNNING) {
-                        log_message(LOG_LEVEL_DEBUG, "CORE1 TIMEOUT REACHED");
+                        log_data("Core1 timeout reached", STATE.raw_data_buffer, raw_data_processed_idx);
                         return try_again();
                     }
                 }
                 STATE.COLLECTING = false;
                 //qtr_decoder.led_off();
-                log_message(LOG_LEVEL_INFO, "signal gathered");
-                log_message(LOG_LEVEL_DEBUG, maxima_counter);
+                LOG_INFO("signal gathered");
+                LOG_DEBUG("%u", maxima_counter);
 
-                log_message(LOG_LEVEL_DEBUG, "EXTREMORUM");
+                LOG_DEBUG("EXTREMORUM");
                 for (int i = 0; i < extrema_vec.size(); i++) {
                     IndexedExtremum extremum = extrema_vec.at(i);
                     if (extremum.extremum == MAXIMUM) {
-                        sprintf(str, "AD maxima detected %i", extremum.index);
-                        log_message(LOG_LEVEL_DEBUG, str);
+                        LOG_DEBUG("AD maxima detected %i", extremum.index);
                     } else {
-                        sprintf(str, "AD minimum detected %i", extremum.index);
-                        log_message(LOG_LEVEL_DEBUG, str);
+                        LOG_DEBUG("AD minimum detected %i", extremum.index);
                     }
                 }
 
                 if (raw_data_processed_idx < expected_bits * 10) {
+                    log_data("Not enough samples 1 reached", STATE.raw_data_buffer, raw_data_processed_idx);
                     return try_again();
                 }
 
                 uint16_t end_idx = detect_signal_end(raw_data_processed_idx, first_minumum.index, last_max_extremum);
                 uint16_t starting_idx = detect_signal_start(first_minumum.index, end_idx);
 
-                if (current_log_level > LOG_LEVEL_INFO) {
+                if (logger::get_level() > logger::LOG_LEVEL_INFO) {
                     for (int i = 0; i < starting_idx; i++) {
-                        printf("%u, ", STATE.raw_data_buffer[i]);
+                        LOG_INFO("%u, ", STATE.raw_data_buffer[i]);
                     }
-                    printf("\n");
-                    printf("BUKAAAAAAA 1111\n");
+                    LOG_INFO("\n");
+                    LOG_INFO("BUKAAAAAAA 1111\n");
 
                     for (int i = starting_idx; i < end_idx; i++) {
-                        printf("%u, ", STATE.raw_data_buffer[i]);
+                        LOG_INFO("%u, ", STATE.raw_data_buffer[i]);
                     }
-                    printf("\n");
-                    printf("BUKAAAAAAA 2222\n");
+                    LOG_INFO("\n");
+                    LOG_INFO("BUKAAAAAAA 2222\n");
                 }
 
 
                 uint16_t signal_data_size = end_idx + 1 - starting_idx;
                 uint16_t (*signal_data) = &STATE.raw_data_buffer[starting_idx];
                 if (signal_data_size < expected_bits * 10) {
+                    log_data("Not enough samples 1 reached", STATE.raw_data_buffer, end_idx);
                     return try_again();
                 }
                 return SignalData { false, signal_data_size, signal_data };
@@ -1071,9 +1024,9 @@ namespace barcode {
 
             uint16_t normalize_data_inplace(uint16_t data[], uint16_t N) {
                 uint16_t min_val = slice_min(data, 0, N).value;
-                log_message(LOG_LEVEL_TRACE, min_val);
+                LOG_TRACE("%u", min_val);
                 uint16_t max_val = slice_max(data, 0, N).value;
-                log_message(LOG_LEVEL_TRACE, max_val);
+                LOG_TRACE("%u", max_val);
                 uint16_t denom = max_val - min_val;
                 for (uint16_t idx = 0; idx < N; idx++) {
                     data[idx] =  SCALE *(data[idx] - min_val) / denom;
@@ -1113,9 +1066,9 @@ namespace barcode {
 
             SmoothenResult smoothen_inplace(uint16_t data[], uint16_t N) {
                 uint16_t minimal_step = normalize_data_inplace(data, N);
-                log_message(LOG_LEVEL_DEBUG, "normalization completed");
+                LOG_DEBUG("normalization completed");
                 median_filter_inplace(data, N, 7);
-                log_message(LOG_LEVEL_DEBUG, "median filter completed");
+                LOG_DEBUG("median filter completed");
                 // uint16_t filtered_N = filter_plateaus_inplace(data, N, int(SCALE*0.02));
                 // log_message(LOG_LEVEL_DEBUG, "filter plateaus completed");
                 return SmoothenResult { N, minimal_step };
@@ -1214,7 +1167,7 @@ namespace barcode {
                     int locked_end = is_index_locked(idx, locked_idx);
                     if (locked_end != -1) {
                         idx = (uint16_t) locked_end;
-                        log_message(LOG_LEVEL_DEBUG, idx);
+                        LOG_DEBUG("%u", idx);
                         continue;
                     }
                     if ((data[idx] >= threshold && data[idx-1] < threshold) ||
@@ -1222,7 +1175,7 @@ namespace barcode {
                         intersections.push_back(idx);
                     }
                 }
-                log_message(LOG_LEVEL_DEBUG, intersections.size());
+                LOG_DEBUG("%u", intersections.size());
                 return intersections;
             }
 
@@ -1281,11 +1234,9 @@ namespace barcode {
 
         public:
             std::vector<Range> find_bits(uint16_t data[], DataPreprocessor::SmoothenResult smoothen_result) {
-                char str[50];
                 uint16_t window_size = MIN(smoothen_result.N / 20, 51);
                 WindowExtremumDetector extremum_finder = WindowExtremumDetector(DETECT, data, window_size);
-                sprintf(str, "extremum window size %i", window_size);
-                log_message(LOG_LEVEL_INFO, str);
+                LOG_INFO("extremum window size %i", window_size);
                 std::vector<IndexedExtremum> signal_extremums;
                 std::vector<Range> bits_positions;
                 uint16_t max_minimum_value = 0;
@@ -1296,8 +1247,7 @@ namespace barcode {
                             if (local_extremum.index > 1 && data[local_extremum.index] < data[0]) {
                                 IndexedExtremum missed_extremum = extremum_finder.find_missed_extremum(local_extremum, 0, false);
                                 if (missed_extremum.extremum != NONE && missed_extremum.index > 1) {
-                                    sprintf(str, "missed extremum detected %i", missed_extremum.index);
-                                    log_message(LOG_LEVEL_DEBUG, str);
+                                    LOG_DEBUG("missed extremum detected %i", missed_extremum.index);
                                     signal_extremums.push_back(missed_extremum);
                                 }
                                 signal_extremums.push_back(local_extremum);
@@ -1332,8 +1282,7 @@ namespace barcode {
                 }
 
                 if (!signal_extremums.empty()) {
-                    sprintf(str, "Max minimum value %d", max_minimum_value);
-                    log_message(LOG_LEVEL_INFO, str);
+                    LOG_INFO("Max minimum value %d", max_minimum_value);
                     std::vector<Range> minimas_positions;
                     int minimum_start = -1;
                     for (uint16_t idx = 0; idx < smoothen_result.N; idx++) {
@@ -1351,8 +1300,7 @@ namespace barcode {
                     if (minimum_start != -1) {
                         minimas_positions.push_back(Range {(uint16_t) minimum_start, smoothen_result.N } );
                     }
-                    sprintf(str, "Found %d minimas", minimas_positions.size());
-                    log_message(LOG_LEVEL_INFO, str);
+                    LOG_INFO("Found %d minimas", minimas_positions.size());
                     if (minimas_positions.size() > 1) {
                         uint16_t last_minimum_end = minimas_positions.at(0).end;
                         for(int idx = 1; idx < minimas_positions.size(); idx++) {
@@ -1374,16 +1322,14 @@ namespace barcode {
                             if (!found_max_between) {
                                 IndexedValue max = slice_max(data, last_minimum_end, current_min.start);
                                 if (max.value > max_minimum_value * 2) {
-                                    sprintf(str, "AD#2 maxima detected %i", max.index);
-                                    log_message(LOG_LEVEL_DEBUG, str);
+                                    LOG_DEBUG("AD#2 maxima detected %i", max.index);
                                     signal_extremums.push_back( IndexedExtremum { MAXIMUM, max.index } );
                                 }
                             }
                             if (!found_current_min_in_extremums) {
                                 IndexedValue min = slice_min(data, current_min.start, current_min.end);
                                 if (min.value <= max_minimum_value) {
-                                    sprintf(str, "AD#2 minima detected %i", min.index);
-                                    log_message(LOG_LEVEL_DEBUG, str);
+                                    LOG_DEBUG("AD#2 minima detected %i", min.index);
                                     signal_extremums.push_back( IndexedExtremum { MINIMUM, min.index } );
                                 }
                             }
@@ -1394,11 +1340,9 @@ namespace barcode {
                     for (int idx = signal_extremums.size() - 1; idx >= 0; idx--) {
                         IndexedExtremum extremum = signal_extremums.at(idx);
                         if (extremum.extremum == MAXIMUM) {
-                            sprintf(str, "AD maxima detected %i", extremum.index);
-                            log_message(LOG_LEVEL_DEBUG, str);
+                            LOG_DEBUG("AD maxima detected %i", extremum.index);
                         } else {
-                            sprintf(str, "AD minimum detected %i", extremum.index);
-                            log_message(LOG_LEVEL_DEBUG, str);
+                            LOG_DEBUG("AD minimum detected %i", extremum.index);
                         }
                     }
                     for (int idx = signal_extremums.size() - 1; idx >= 0; idx--) {
@@ -1440,20 +1384,13 @@ namespace barcode {
 
             int decode_barcode(uint16_t data[], DataPreprocessor::SmoothenResult smoothen_result) {
                 std::vector<Range> all_bits = find_bits(data, smoothen_result);
-                char str[50];
-                sprintf(str, "found %d bits", all_bits.size());
-                log_message(LOG_LEVEL_INFO, str);
-                if (current_log_level == LOG_LEVEL_DEBUG) {
+                LOG_INFO("found %d bits", all_bits.size());
+                if (logger::get_level() >= logger::LOG_LEVEL_DEBUG) {
                     char str[300] = "";
                     for(int i = 0; i < all_bits.size(); i++) {
-                        char temp[16];
-                        sprintf(temp, "(%d, %d)", all_bits[i].start, all_bits[i].end);  // Assuming all_bits[i] is an integer
-                        strcat(str, temp);
-                        if (i < all_bits.size() - 1) {
-                            strcat(str, ", ");
-                        }
+                        LOG_DEBUG("(%d, %d), ", all_bits[i].start, all_bits[i].end);  // Assuming all_bits[i] is an integer
                     }
-                    log_message(LOG_LEVEL_DEBUG, str);
+                    LOG_DEBUG("\n");
                 }
                 if (all_bits.size() != 10) {
                     return -1;
@@ -1474,7 +1411,7 @@ namespace barcode {
                     }
                     number = number*2 + bit;
                 }
-                log_message(LOG_LEVEL_INFO, binary_number);
+                LOG_INFO(binary_number);
 
                 return number;
             }
@@ -1511,27 +1448,31 @@ namespace barcode {
         SignalData data = gatherer.gather_raw_barcode_data();
         uint32_t gathered = time_us_32();
         if (data.try_again) {
-            log_message(LOG_LEVEL_DEBUG, "please try again");
+            LOG_DEBUG("please try again");
         } else {
-            log_message(LOG_LEVEL_DEBUG, "signal gathered");
-            log_message(LOG_LEVEL_DEBUG, data.size);
+            LOG_DEBUG("signal gathered");
+            LOG_DEBUG("%u", data.size);
             DataPreprocessor::SmoothenResult smoothen_result = preprocessor.smoothen_inplace(data.array_ptr, data.size);
             uint32_t smoothen =  time_us_32();
-            log_message(LOG_LEVEL_DEBUG, "signal smoothened");
-            if (current_log_level > LOG_LEVEL_INFO) {
+            LOG_DEBUG("signal smoothened");
+            if (logger::get_level() > logger::LOG_LEVEL_INFO) {
                 for (int i = 0; i < smoothen_result.N; i++) {
-                    printf("%u, ", data.array_ptr[i]);
+                    LOG_DEBUG("%u, ", data.array_ptr[i]);
                 }
-                printf("\n");
+                LOG_DEBUG("\n");
             }
             int value = barcode_decoder.decode_barcode(data.array_ptr, smoothen_result);
             uint32_t decoded = time_us_32();
-            log_message(LOG_LEVEL_INFO, (gathered - start) / 1'000);
-            log_message(LOG_LEVEL_INFO, (smoothen - gathered) / 1'000);
-            log_message(LOG_LEVEL_INFO, (decoded - smoothen)  / 1'000);
-            log_message(LOG_LEVEL_DEBUG, "barcode decoded");
-            log_message(LOG_LEVEL_INFO, value);
+            LOG_INFO("%u", (gathered - start) / 1'000);
+            LOG_INFO("%u", (smoothen - gathered) / 1'000);
+            LOG_INFO("%u", (decoded - smoothen)  / 1'000);
+            LOG_DEBUG("barcode decoded");
+            LOG_INFO("%u", value);
             //qtr_decoder.led_off();
+            if (value == -1) {
+                LOG_INFO("Cannot decode signal to barcode");
+                log_data("Cannot decode signal to barcode", data.array_ptr, smoothen_result.N);
+            }
             return value;
         }
         return -1;

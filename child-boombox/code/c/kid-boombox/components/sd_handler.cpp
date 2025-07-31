@@ -12,6 +12,7 @@
 namespace sd_handler
 {
     struct sd_file_t { FIL fil; };
+    static volatile bool initialized = false;
 
     class SDHandler {
         private:
@@ -76,6 +77,11 @@ namespace sd_handler
                     return false;
                 }
 
+                if (FF_FS_READONLY != 0 || FF_FS_LOCK == 0) {
+                    printf("Error: configuration must allow read/write and define file locks\n");
+                    return false;
+                }
+
                 printf("SD card mounted successfully\n");
                 return PICO_OK;
             }
@@ -106,15 +112,23 @@ namespace sd_handler
                 return false;
             }
 
-            bool open_file_for_read(char *filename, sd_file_t* file) {
-                FIL fil;
-                FRESULT fr;
-                fr = f_open(&fil, filename, FA_READ | FA_OPEN_EXISTING);
-                if (fr != FR_OK) {
-                    printf("Error: cannot open file %s:  %s (%d)\n", filename, FRESULT_str(fr), fr);
+            bool open_file_for_read(char *filename, sd_file_t*& file) {
+                if (file != nullptr) {
+                    printf("ERROR: passed file must be nullptr\n");
                     return false;
                 }
-                file = new sd_file_t { fil };
+                file = new sd_file_t;
+                if (!file) {
+                    return false;
+                }
+                FRESULT fr;
+                fr = f_open(&file->fil, filename, FA_READ | FA_OPEN_EXISTING);
+                if (fr != FR_OK) {
+                    printf("Error: cannot open file for reading %s:  %s (%d)\n", filename, FRESULT_str(fr), fr);
+                    delete file;
+                    file = nullptr;
+                    return false;
+                }
                 return true;
             }
 
@@ -136,7 +150,7 @@ namespace sd_handler
                             &bytes_read);
 
                 if (fr != FR_OK) {
-                    printf("Error: while reading file: %s (%d)", FRESULT_str(fr), fr);
+                    printf("Error: while reading file: %s (%d)\n", FRESULT_str(fr), fr);
                     return 0;
                 }
 
@@ -164,24 +178,29 @@ namespace sd_handler
     static SDHandler sd_handler = SDHandler();
 
     void initialize_module() {
-        sleep_ms(25);
+        if (!initialized) {
+            initialized = true;
+            sleep_ms(25);
 
-        sd_handler.sd_card_init();
+            sd_handler.sd_card_init();
 
-        sleep_ms(5); // w8t for stabilization
+            sleep_ms(5); // w8t for stabilization
+        }
     }
 
     void deinitialize_module() {
-        sd_handler.sd_card_deinit();
-
-        sleep_ms(5);
+        if (initialized) {
+            sd_handler.sd_card_deinit();
+            initialized = false;
+            sleep_ms(5);
+        }
     }
 
     bool file_exists(char *filename) {
         return sd_handler.file_exists(filename);
     }
 
-    bool open_file_for_read(char *filename, sd_file_t* file) {
+    bool open_file_for_read(char *filename, sd_file_t*& file) {
         return sd_handler.open_file_for_read(filename, file);
     }
 
@@ -201,10 +220,15 @@ namespace sd_handler
         return sd_handler.read_bytes(&file->fil, buffer, bytes_to_read);
     }
     
-    bool close_file(sd_file_t* file) {
-        return sd_handler.close_file(&file->fil);
+    bool close_file(sd_file_t*& file) {
+        if (file != nullptr) {
+            bool success = sd_handler.close_file(&file->fil);
+            delete file;
+            file = nullptr;
+            return success;
+        }
+        return false;
     }
-
 }
 
 size_t sd_get_num() { return sd_handler::SDHandler::sd_cards.size(); }
