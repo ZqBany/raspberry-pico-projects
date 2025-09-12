@@ -9,8 +9,8 @@ namespace voltage_reader
     };
 
     const BatteryType battery = SINGLE_USE;
-    const float single_use_low_voltage = 1.2f * 3;
-    const float rechargable_low_voltage = 1.0f * 3;
+    const float single_use_low_voltage = 1.23f * 3; // testing in progress
+    const float rechargable_low_voltage = 1.0f * 3; // not tested
 
     void initialize_module();
     float vsys_voltage();
