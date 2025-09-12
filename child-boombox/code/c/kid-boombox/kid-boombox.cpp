@@ -106,6 +106,8 @@ LEDHelper::BlinkCounter LEDHelper::counter = { 0 };
 class ButtonHelper {
     private:
         static uint32_t last_replay_ts_us;
+        static bool wake_pressed;
+        static uint32_t wake_press_time;
 
         static void replay_button_callback() {
             uint32_t now_us = time_us_32();
@@ -135,6 +137,10 @@ class ButtonHelper {
             }
         }
 
+        static void restart_callback() {
+            watchdog_enable(STATUS_LED_MS, 1);
+        }
+
         static void init_wake_button() {
             gpio_init(WAKE_GPIO);
             gpio_set_dir(WAKE_GPIO, GPIO_IN);
@@ -161,7 +167,25 @@ class ButtonHelper {
             } else if (gpio == VOL_GPIO) {
                 volume_button_callback();
             } else if (gpio == WAKE_GPIO) {
-                stop_button_callback();
+                uint32_t now = time_us_32();
+                if (now - wake_press_time < 100) return;
+                // On falling edge: measure duration
+                if (events & GPIO_IRQ_EDGE_FALL) {
+                    if (wake_pressed) {
+                        wake_pressed = false;
+                        uint32_t duration = now - wake_press_time;
+                        if (duration >= 5'000 * 1000) { // 5 seconds in microseconds
+                            restart_callback();
+                        } else {
+                            stop_button_callback();
+                        }
+                    }
+                }
+                // On rising edge: record press time
+                if (events & GPIO_IRQ_EDGE_RISE) {
+                    wake_pressed = true;
+                    wake_press_time = now; // Pico SDK microsecond timer
+                }
             }
         }
 
@@ -171,7 +195,7 @@ class ButtonHelper {
             gpio_set_irq_callback(ButtonHelper::gpio_irq_callback);
             gpio_set_irq_enabled(REPLAY_GPIO, GPIO_IRQ_EDGE_RISE, true);
             gpio_set_irq_enabled(VOL_GPIO, GPIO_IRQ_EDGE_RISE, true);
-            gpio_set_irq_enabled(WAKE_GPIO, GPIO_IRQ_EDGE_RISE, true);
+            gpio_set_irq_enabled(WAKE_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
             irq_set_enabled(IO_IRQ_BANK0, true);
         }
         
@@ -181,6 +205,8 @@ class ButtonHelper {
 };
 
 uint32_t ButtonHelper::last_replay_ts_us = 0;
+bool ButtonHelper::wake_pressed = false;
+uint32_t ButtonHelper::wake_press_time = 0;
 uint32_t ButtonHelper::last_volume_ts_us = 0;
 uint32_t ButtonHelper::last_stop_ts_us = 0;
 
@@ -470,7 +496,7 @@ class DormantSleepHelper {
             core1Executor.request_dormant();
             gpio_set_irq_enabled(REPLAY_GPIO, GPIO_IRQ_EDGE_RISE, false);
             gpio_set_irq_enabled(VOL_GPIO, GPIO_IRQ_EDGE_RISE, false);
-            gpio_set_irq_enabled(WAKE_GPIO, GPIO_IRQ_EDGE_RISE, false);
+            gpio_set_irq_enabled(WAKE_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
             barcode::deinitialize_module();
             while(!core1Executor.ready_for_entering_dormant()) {
                 sleep_ms(5);
@@ -493,18 +519,18 @@ class DormantSleepHelper {
             sleep_goto_dormant_until_edge_high(WAKE_GPIO);
         }
 
-        static bool is_wake_up_pressed_debounced() {
-            if (gpio_get(WAKE_GPIO) == 0) {
+        static bool is_pressed_debounced(uint8_t gpio) {
+            if (gpio_get(gpio) == 0) {
                 sleep_ms(20);       
-                if (gpio_get(WAKE_GPIO) == 0) {
+                if (gpio_get(gpio) == 0) {
                     return false;
                 }
             }
             return true;
         }
 
-        static bool is_long_pressed() {
-            if(!is_wake_up_pressed_debounced()) return false;  // Released early
+        static bool is_long_pressed(uint8_t gpio) {
+            if(!is_pressed_debounced(gpio)) return false;  // Released early
 
             const uint32_t interval = 100;
             const uint32_t total_duration = 2'000;
@@ -513,9 +539,9 @@ class DormantSleepHelper {
             while (elapsed < total_duration) {
                 sleep_ms(interval);
                 elapsed += interval;
-                if (!is_wake_up_pressed_debounced()) return false;  // Released early
+                if (!is_pressed_debounced(gpio)) return false;  // Released early
             }
-            return true;  // Held pressed for 5 seconds
+            return true;  // Held pressed for 2 seconds
         }
 
         static void restore_minimal_after_sleep() {
@@ -527,7 +553,7 @@ class DormantSleepHelper {
 
         static bool should_wake_up() {
             restore_minimal_after_sleep();
-            return is_long_pressed();
+            return is_long_pressed(WAKE_GPIO);
         }
 
         static void restart_pico() {
