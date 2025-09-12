@@ -13,6 +13,8 @@ import json
 from multiprocessing.dummy import Pool as ThreadPool
 from gimpfu import *
 
+# in GIMP console (Filters -> Python-Fu -> Console)
+#
 # import os
 # os.chdir("SCRIPT_DIRECTORY")
 # execfile("./template.py")
@@ -60,7 +62,7 @@ def run_ffprobe(filepath):
         comment = tags.get("comment", "")
 
         if comment:  # Non-empty
-            existing_files_by_yt_id[comment] = filename
+            existing_files_by_yt_id[comment] = filepath
     except subprocess.CalledProcessError:
         print("Error processing audio file:", filepath)
 
@@ -235,6 +237,7 @@ def process_song(image, song_idx, author, title, youtube_id):
                                      '--output', "./audio_cards/audio_files/{0} - {1}.%(ext)s".format(replace_diacritics(author), replace_diacritics(title)),
                                      '--ffmpeg-location', ffmpeg_base,
                                      "https://www.youtube.com/watch?v={0}".format(youtube_id)])
+            time.sleep(30)
     except subprocess.CalledProcessError as exc:
         result = exc.output
 
@@ -256,8 +259,6 @@ with open('songs_to_add.csv', 'rb') as file_obj:
     song_idx = 0
     for row in reader_obj:
         row = [cell.decode('utf-8') for cell in row]
-        if song_idx > 0:
-            time.sleep(30)
         if song_idx >= 12:
             break
         author = row[0]
