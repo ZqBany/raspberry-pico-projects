@@ -157,9 +157,26 @@ Note: At low voltages system becomes unstable. That's why there is check of batt
 
 ---
 
+## TODO
+
+- Add power switch on battery input - POLOLU-2808
+-- disconnect Amplifier SD pin (defaults to stereo average)
+-- remove voltage divider ( [PIN 27], [PIN 28] )
+-- remove software handling of GPIO21 [PIN 27]
+-- connect battery + to POLOLU-2808 [PIN VIN]
+-- connect POLOLU-2808 [PIN VOUT] to PICO [PIN VSYS] + Audio Amplifier [PIN Vin]
+-- connect POLOLU-2808 [PIN GND] to Pico ground [PIN 38] + Audio Amplifier [PIN GND]
+-- disconnect Button #3 (red) from PICO
+-- figure diffrent way of handling old button 3 STOP playing track function 
+-- connect POLULU-2808 [PIN A] through momentary switch [Button #3 (red)] to ground for on-only operation
+-- connect free PICO GPIO f.e. GPIO20 [PIN 26] to POLOLU-2808 [PIN OFF] for shutoff
+-- add software handling instead of dormant mode - a high pulse [PIN 26] to shutoff power
+
+---
+
 ## Important Notes
 - **Current Limit:** It is recommended to keep the draw on the Pico’s 3.3V (OUT) pin below 300mA. This is why the **Amplifier is powered directly from the batteries.**
-- Consider powering the SD card directly from the battery rail in future revisions to reduce the load on the Pico's regulator.
+
 
 ---
 
