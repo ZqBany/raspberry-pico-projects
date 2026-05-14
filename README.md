@@ -150,9 +150,7 @@ Note: At low voltages system becomes unstable. That's why there is check of batt
 ---
 
 ## Known Issues
-- **Hardware:** The current `back_plate.stl` is missing a cutout for the battery switch.
-- **Power:** Sleep mode (Dormant) still draws significant power because the SD card cannot be fully powered down via software. A MOSFET for the SD card power line is recommended for future versions.
-- **Stability:** Hard-cutting power with the switch while the unit is on can occasionally lead to SD card file corruption.
+- **Hardware:** Missing place for POLOLU-2808
 - **Logs:** SD card log rotation is currently inconsistent.
 
 ---

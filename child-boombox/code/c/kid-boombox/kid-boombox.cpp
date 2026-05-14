@@ -17,7 +17,6 @@
 #define STOP_PLAYING_MSG 85
 #define CHANGE_VOLUME_MSG 86
 
-#define WAKE_GPIO 20
 #define REPLAY_GPIO 22
 #define VOL_GPIO 15
 
@@ -106,8 +105,6 @@ LEDHelper::BlinkCounter LEDHelper::counter = { 0 };
 class ButtonHelper {
     private:
         static uint32_t last_replay_ts_us;
-        static bool wake_pressed;
-        static uint32_t wake_press_time;
 
         static void replay_button_callback() {
             uint32_t now_us = time_us_32();
@@ -137,16 +134,6 @@ class ButtonHelper {
             }
         }
 
-        static void restart_callback() {
-            watchdog_enable(STATUS_LED_MS, 1);
-        }
-
-        static void init_wake_button() {
-            gpio_init(WAKE_GPIO);
-            gpio_set_dir(WAKE_GPIO, GPIO_IN);
-            gpio_pull_down(WAKE_GPIO);
-        }
-
         static int init_buttons(void) {
             init_wake_button();
 
@@ -166,26 +153,6 @@ class ButtonHelper {
                 replay_button_callback();
             } else if (gpio == VOL_GPIO) {
                 volume_button_callback();
-            } else if (gpio == WAKE_GPIO) {
-                uint32_t now = time_us_32();
-                if (now - wake_press_time < 100) return;
-                // On falling edge: measure duration
-                if (events & GPIO_IRQ_EDGE_FALL) {
-                    if (wake_pressed) {
-                        wake_pressed = false;
-                        uint32_t duration = now - wake_press_time;
-                        if (duration >= 5'000 * 1000) { // 5 seconds in microseconds
-                            restart_callback();
-                        } else {
-                            stop_button_callback();
-                        }
-                    }
-                }
-                // On rising edge: record press time
-                if (events & GPIO_IRQ_EDGE_RISE) {
-                    wake_pressed = true;
-                    wake_press_time = now; // Pico SDK microsecond timer
-                }
             }
         }
 
@@ -195,7 +162,6 @@ class ButtonHelper {
             gpio_set_irq_callback(ButtonHelper::gpio_irq_callback);
             gpio_set_irq_enabled(REPLAY_GPIO, GPIO_IRQ_EDGE_RISE, true);
             gpio_set_irq_enabled(VOL_GPIO, GPIO_IRQ_EDGE_RISE, true);
-            gpio_set_irq_enabled(WAKE_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
             irq_set_enabled(IO_IRQ_BANK0, true);
         }
         
@@ -216,8 +182,8 @@ class Core1Executor {
             volatile bool TERMINATE = false;
             volatile bool READY = false;
             volatile bool FULL_IDLE = false;
-            volatile bool CORE_0_REQUEST_DORMANT = false;
-            volatile bool DORMANT_READY = false;
+            volatile bool CORE_0_REQUEST_SHUTDOWN = false;
+            volatile bool SHUTDOWN_READY = false;
             volatile int REQUESTED_FILE_ID = 0;
         };
 
@@ -340,12 +306,12 @@ class Core1Executor {
             return CORE_1_STATE.FULL_IDLE;
         }
 
-        bool prepared_to_enter_dormant_mode() {
-            return CORE_1_STATE.DORMANT_READY;
+        bool prepared_for_shutdown() {
+            return CORE_1_STATE.SHUTDOWN_READY;
         }
 
-        bool should_prepare_for_dormant_mode() {
-            return CORE_1_STATE.CORE_0_REQUEST_DORMANT && !CORE_1_STATE.DORMANT_READY;
+        bool should_prepare_for_shutdown() {
+            return CORE_1_STATE.CORE_0_REQUEST_SHUTDOWN && !CORE_1_STATE.SHUTDOWN_READY;
         }
 
     public:
@@ -354,11 +320,11 @@ class Core1Executor {
         void main() {
             initialize();
             while (not_terminated()) {
-                while (sleep_timeout_reached() || prepared_to_enter_dormant_mode()) {
+                while (sleep_timeout_reached() || prepared_for_shutdown()) {
                     sleep_us(SAMPLES_SLEEP_US);
-                    if (should_prepare_for_dormant_mode()) {
+                    if (should_prepare_for_shutdown()) {
                         deinitialize();
-                        CORE_1_STATE.DORMANT_READY = true;
+                        CORE_1_STATE.SHUTDOWN_READY = true;
                     }
                 }
                 if (job == IDLE) {
@@ -382,7 +348,7 @@ class Core1Executor {
                     } else {
                         if (time_us_32() - last_busy > SLEEP_TIMEOUT_US) {
                             CORE_1_STATE.FULL_IDLE = true;
-                            printf("[Core#1] Core1 - dormant ready\n");
+                            printf("[Core#1] Core1 - shutdown ready\n");
                             continue;
                         }
                         sleep_us(SAMPLES_SLEEP_US);
@@ -459,12 +425,12 @@ class Core1Executor {
             multicore_fifo_push_blocking(START_PLAYING_MSG);
         }
 
-        void request_dormant() {
-            CORE_1_STATE.CORE_0_REQUEST_DORMANT = true;
+        void request_shutdown() {
+            CORE_1_STATE.CORE_0_REQUEST_SHUTDOWN = true;
         }
 
-        bool ready_for_entering_dormant() {
-            return CORE_1_STATE.DORMANT_READY;
+        bool ready_for_shutdown() {
+            return CORE_1_STATE.SHUTDOWN_READY;
         }
 
         bool reached_sleep_timeout() {
@@ -483,7 +449,7 @@ void run_core_1_executor() {
     core1Executor.main();
 }
 
-class DormantSleepHelper {
+class ShutdownHelper {
     private:
         static void disable_usb_stdio() {
             #if LIB_PICO_STDIO_USB
@@ -492,13 +458,12 @@ class DormantSleepHelper {
             #endif
         }
 
-        static void prepare_for_sleep() {
-            core1Executor.request_dormant();
+        static uint32_t prepare_for_shutdown() {
+            core1Executor.request_shutdown();
             gpio_set_irq_enabled(REPLAY_GPIO, GPIO_IRQ_EDGE_RISE, false);
             gpio_set_irq_enabled(VOL_GPIO, GPIO_IRQ_EDGE_RISE, false);
-            gpio_set_irq_enabled(WAKE_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
             barcode::deinitialize_module();
-            while(!core1Executor.ready_for_entering_dormant()) {
+            while(!core1Executor.ready_for_shutdown()) {
                 sleep_ms(5);
             }
             audio::AUDIO_VOLUME VOL = audio::current_volume();
@@ -513,83 +478,57 @@ class DormantSleepHelper {
             sleep_run_from_xosc();
             uart_default_tx_wait_blocking();
             disable_usb_stdio();
+            uint32_t ready_us = time_us_32();
+            return ready_us;
         }
 
-        static void sleep() {
-            sleep_goto_dormant_until_edge_high(WAKE_GPIO);
-        }
-
-        static bool is_pressed_debounced(uint8_t gpio) {
-            if (gpio_get(gpio) == 0) {
-                sleep_ms(20);       
-                if (gpio_get(gpio) == 0) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        static bool is_long_pressed(uint8_t gpio) {
-            if(!is_pressed_debounced(gpio)) return false;  // Released early
-
-            const uint32_t interval = 100;
-            const uint32_t total_duration = 2'000;
-            uint32_t elapsed = 0;
-
-            while (elapsed < total_duration) {
-                sleep_ms(interval);
-                elapsed += interval;
-                if (!is_pressed_debounced(gpio)) return false;  // Released early
-            }
-            return true;  // Held pressed for 2 seconds
-        }
-
-        static void restore_minimal_after_sleep() {
-            sleep_power_up();
-            ButtonHelper::init_wake_button_only();
-            sleep_ms(10); // allow GPIO input stabilization
-            gpio_get(WAKE_GPIO); // ignore first reading
-        }
-
-        static bool should_wake_up() {
-            restore_minimal_after_sleep();
-            return is_long_pressed(WAKE_GPIO);
+        static void shutdown() {
+            //TODO handle POLULU turn off signal
         }
 
         static void restart_pico() {
-            watchdog_enable(STATUS_LED_MS, 1);
+            watchdog_enable(100, 1);
         }
     public:
-        static bool enter_sleep_if_both_cores_ready() {
-            printf("core 0 ready for dormant\n");
+        static bool shutdown_if_both_cores_ready() {
+            printf("core 0 ready for shutdown\n");
             if (core1Executor.reached_sleep_timeout()) {
-                printf("core 1 ready dormant\n");
+                printf("core 1 ready for shutdown\n");
+
+                uint32_t ready_us = prepare_for_shutdown();
+                shutdown();
+                uint32_t now_us = time_us_32();
                 do {
-                    prepare_for_sleep();
-                    sleep();
-                } while(!should_wake_up());
+                    sleep_ms(10);
+                    now_us = time_us_32();
+                } while(now_us - last_replay_ts_us < 15'000'000); // wait 15 seconds
                 LEDHelper::blink_status_led(1);
                 restart_pico();
-                sleep_ms(STATUS_LED_MS);
+                sleep_ms(100);
                 return true;
             }
             return false;
         }
 
-        static bool enter_emergency_dormant() {
+        static void emergency_shutdown() {
+            uint32_t ready_us = prepare_for_shutdown();
+            shutdown();
+            uint32_t now_us = time_us_32();
             do {
-                prepare_for_sleep();
-                sleep();
-            } while(true);
+                sleep_ms(10);
+                now_us = time_us_32();
+            } while(now_us - last_replay_ts_us < 15'000'000); // wait 15 seconds
+            restart_pico();
+            sleep_ms(100);
         }
 };
 
-bool enter_dormant_sleep_if_low_battery() {
+bool shutdown_if_battery_empty() {
     const float vsys_voltage = voltage_reader::vsys_voltage();
     printf("VSYS voltage: %.2f V\n", vsys_voltage);
     if (vsys_voltage <= voltage_reader::critically_low_battery()) {
-        printf("Battery low - enter dormant mode");
-        DormantSleepHelper::enter_emergency_dormant();
+        printf("Battery low - shutdown");
+        ShutdownHelper::emergency_shutdown();
     }
     return vsys_voltage < voltage_reader::low_battery();
 }
@@ -602,7 +541,7 @@ int main()
     while (WAIT_FOR_USB_STUDIO_ON_STARTUP && !stdio_usb_connected()) { sleep_ms(10); } // wait for monitor to connect
 
     voltage_reader::initialize_module();
-    bool low_battery = enter_dormant_sleep_if_low_battery();
+    bool low_battery = shutdown_if_battery_empty();
     if (low_battery) {
         core1Executor.set_low_battery();
     }
@@ -619,7 +558,7 @@ int main()
     uint8_t timeout_cnt = 0;
     while(barcode::initialize_baseline()) {
         if (timeout_cnt > 60) {
-            if (DormantSleepHelper::enter_sleep_if_both_cores_ready()) {
+            if (ShutdownHelper::shutdown_if_both_cores_ready()) {
                 timeout_cnt = 0;
             }
         } else {
@@ -639,7 +578,7 @@ int main()
         timeout_cnt = 0;
         while(barcode::wait_for_missing_card()) {
             if (timeout_cnt > 60) {
-                if (DormantSleepHelper::enter_sleep_if_both_cores_ready()) {
+                if (ShutdownHelper::shutdown_if_both_cores_ready()) {
                     timeout_cnt = 0;
                 }
             } else {
@@ -650,7 +589,7 @@ int main()
         timeout_cnt = 0;
         while(barcode::wait_for_card()) {
             if (timeout_cnt > 60) {
-                if (DormantSleepHelper::enter_sleep_if_both_cores_ready()) {
+                if (ShutdownHelper::shutdown_if_both_cores_ready()) {
                     timeout_cnt = 0;
                 }
             } else {

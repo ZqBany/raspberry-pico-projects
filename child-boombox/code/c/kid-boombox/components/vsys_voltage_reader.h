@@ -15,7 +15,7 @@ namespace voltage_reader
     void initialize_module();
     float vsys_voltage();
     float low_battery();
-    float critically_low_battery(); // voltage that will cause device to not wake up but immediately entering dormant mode without wake up handling
+    float critically_low_battery(); // voltage that will cause device to not wake up but immediately shutdown without wake up handling
     bool is_critically_low_battery(); 
 }
 
