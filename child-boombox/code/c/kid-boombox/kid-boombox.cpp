@@ -295,6 +295,7 @@ class Core1Executor {
         void deinitialize() {
             play_bye_msg();
             audio::deinitialize_module();
+            logger::deinitialize_module();
             sd_handler::deinitialize_module();
         }
 
