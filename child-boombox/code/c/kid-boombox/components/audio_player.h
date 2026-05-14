@@ -5,7 +5,6 @@
 
 #define SAMPLES_PER_BUFFER 512
 #define AUDIO_I2S_DMA_CHANNEL 0
-#define AUDIO_SHUTDOWN_PIN 21 // Connected via 470kOhm resistor to MAX98357A2 SD pin
 
 namespace audio
 {   

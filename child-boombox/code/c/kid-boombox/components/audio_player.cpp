@@ -154,11 +154,7 @@ namespace audio {
             WavReader wav_reader;
 
             void init_audio() {
-                printf("Variables %d %d %d %d\n", PICO_AUDIO_I2S_DATA_PIN, PICO_AUDIO_I2S_CLOCK_PIN_BASE, PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED, AUDIO_SHUTDOWN_PIN);
-
-                gpio_init(AUDIO_SHUTDOWN_PIN);
-                gpio_set_dir(AUDIO_SHUTDOWN_PIN, GPIO_OUT);
-                gpio_put(AUDIO_SHUTDOWN_PIN, true);
+                printf("Variables %d %d %d %d\n", PICO_AUDIO_I2S_DATA_PIN, PICO_AUDIO_I2S_CLOCK_PIN_BASE, PICO_AUDIO_I2S_CLOCK_PINS_SWAPPED);
 
                 static struct audio_buffer_format producer_format = {
                         .format = &audio_format,
@@ -196,7 +192,6 @@ namespace audio {
 
             void deinit_audio() {
                 audio_i2s_set_enabled(false);
-                gpio_put(AUDIO_SHUTDOWN_PIN, false);
             }
 
             int get_channels_number() {
