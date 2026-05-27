@@ -52,10 +52,10 @@ The following files are required on the SD card for system feedback:
 - **Storage:** Adafruit MicroSD SPI/SDIO Card Breakout Board
 - **Audio:** MAX98357 I2S 3W Class D Amplifier
 - **Speaker:** 4 Ohm 3W Speaker (with JST 1.25mm terminal)
-- **Wiring:** WAGO 221-415 (for 3.3V distribution), Micro JST 1.25mm 2-pin/3-pin cables
+- **Wiring:** WAGO 221-415 (for 3.3V distribution), Micro JST 1.25mm 2-pin/3-pin cables, 24AWG cables
 - **Buttons:** 3x 6x6mm Micro Momentary Tactile Switches
 - **LEDs:** 2x 3mm LEDs (Green and Yellow)
-- **Resistors:** 1x 100kΩ and 1x 22kΩ (for the amplifier voltage divider)
+- **Power Switch:** Pololu 2808 Mini Pushbutton Power Switch with Reverse Voltage Protection, LV
 
 ## Wiring Diagram:
 ```
