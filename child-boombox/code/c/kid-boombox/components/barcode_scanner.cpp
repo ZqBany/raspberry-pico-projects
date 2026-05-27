@@ -94,7 +94,7 @@ namespace barcode {
             void led_on() {
                 if (false && time_us_32() - last_led_off_us <= 900) {
                     LOG_TRACE("led on via pin");
-                    gpio_put(control_pin, 1);
+                    gpio_put(control_pin, true);
                 } else {
                     LOG_TRACE("led on via pwm dimm");
                     uint32_t led_on_start = led_on_level(LED_BRIGHTNESS_LEVEL);
@@ -559,16 +559,18 @@ namespace barcode {
                 uint32_t start = time_us_32();
                 uint16_t min = UINT16_T_MAX;
                 // qtr_decoder._led_on();
-                while (min > 500 || min < 200) {
+                while (min > 500 || min < 190) {
                     min = UINT16_T_MAX;
                     for (int i = 0; i < 5; i++) {
                         uint16_t value = qtr_decoder.read_sensor_raw();
+                        LOG_DEBUG("%u", value);
                         if (value >= 50 && value < min) {
                             min = value;
                         }
                         sleep_ms(10);
                     }
                     if (time_us_32() - start > FUNC_TIMEOUT_US) {
+                        LOG_DEBUG("%u", min);
                         return true;
                     }
                     sleep_ms(100);

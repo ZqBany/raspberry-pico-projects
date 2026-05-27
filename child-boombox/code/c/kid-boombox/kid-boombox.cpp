@@ -12,6 +12,7 @@
 #include "tusb.h"
 #include "pico/stdio_usb.h"
 #include "hardware/watchdog.h"
+#include "logger.h"
 
 #define START_PLAYING_MSG 84
 #define STOP_PLAYING_MSG 85
@@ -19,6 +20,7 @@
 
 #define REPLAY_GPIO 22
 #define VOL_GPIO 15
+#define SHUTDOWN_GPIO 5
 
 #define LED_GREEN_GPIO 14
 #define LED_YELLOW_GPIO 13
@@ -45,7 +47,7 @@ class LEDHelper {
         static bool turn_off_status_led(repeating_timer_t *rt) {
             struct BlinkCounter *blink_counter = (struct BlinkCounter *) rt->user_data;
             if (blink_counter->count == 0) {
-                gpio_put(LED_YELLOW_GPIO, 0);  // turn LED off finally
+                gpio_put(LED_YELLOW_GPIO, false);  // turn LED off finally
                 blink_timer_running = false;
                 return false;  // cancel repeating timer
             }
@@ -53,7 +55,7 @@ class LEDHelper {
             // Toggle LED, decrement count on every second call
             static bool led_on = false;
             led_on = !led_on;
-            gpio_put(LED_YELLOW_GPIO, led_on ? 1 : 0);
+            gpio_put(LED_YELLOW_GPIO, led_on ? true : false);
 
             // Count toggles as "half blink", adjust if needed
             if (!led_on) {
@@ -87,7 +89,7 @@ class LEDHelper {
 
             if (!blink_timer_running) {
                 blink_timer_running = true;
-                gpio_put(LED_YELLOW_GPIO, 1);     // Turn LED on
+                gpio_put(LED_YELLOW_GPIO, true);     // Turn LED on
                 add_repeating_timer_ms(-STATUS_LED_MS, turn_off_status_led, &counter, &timer); // set timer
             }
         }
@@ -135,8 +137,6 @@ class ButtonHelper {
         }
 
         static int init_buttons(void) {
-            init_wake_button();
-
             gpio_init(REPLAY_GPIO);
             gpio_set_dir(REPLAY_GPIO, GPIO_IN);
             gpio_pull_down(REPLAY_GPIO);
@@ -164,15 +164,9 @@ class ButtonHelper {
             gpio_set_irq_enabled(VOL_GPIO, GPIO_IRQ_EDGE_RISE, true);
             irq_set_enabled(IO_IRQ_BANK0, true);
         }
-        
-        static void init_wake_button_only(void) {
-            init_wake_button();
-        }
 };
 
 uint32_t ButtonHelper::last_replay_ts_us = 0;
-bool ButtonHelper::wake_pressed = false;
-uint32_t ButtonHelper::wake_press_time = 0;
 uint32_t ButtonHelper::last_volume_ts_us = 0;
 uint32_t ButtonHelper::last_stop_ts_us = 0;
 
@@ -472,8 +466,7 @@ class ShutdownHelper {
                 printf("Saving volume to flash: 0x%04x (%d %%)\n", VOL, 100*VOL/audio::VOL_100);
                 storage::save_volume_to_flash(VOL);
             }
-            LEDHelper::power_led_put(false);
-            gpio_put(LED_YELLOW_GPIO, 0);
+            gpio_put(LED_YELLOW_GPIO, false);
             sleep_ms(1);
             uart_default_tx_wait_blocking();
             sleep_run_from_xosc();
@@ -483,8 +476,18 @@ class ShutdownHelper {
             return ready_us;
         }
 
-        static void shutdown() {
-            //TODO handle POLULU turn off signal
+        static int init_shutdown_gpio(void) {
+             gpio_init(SHUTDOWN_GPIO);
+             gpio_set_dir(SHUTDOWN_GPIO, GPIO_OUT);
+             gpio_put(SHUTDOWN_GPIO, false);
+             return PICO_OK;
+        }
+
+        static void shutdown(uint pulse_duration_ms = 50) {
+            // sends high pulse (> 1 V) to OFF pin of POLOLU 2808 which turns off the switch
+            gpio_put(SHUTDOWN_GPIO, true);
+            sleep_ms(pulse_duration_ms);
+            gpio_put(SHUTDOWN_GPIO, false);
         }
 
         static void restart_pico() {
@@ -497,13 +500,15 @@ class ShutdownHelper {
                 printf("core 1 ready for shutdown\n");
 
                 uint32_t ready_us = prepare_for_shutdown();
+                LEDHelper::blink_status_led(1);
                 shutdown();
                 uint32_t now_us = time_us_32();
                 do {
                     sleep_ms(10);
                     now_us = time_us_32();
-                } while(now_us - last_replay_ts_us < 15'000'000); // wait 15 seconds
-                LEDHelper::blink_status_led(1);
+                } while(now_us - ready_us < 15'000'000); // wait 15 seconds
+                LEDHelper::blink_status_led(7);
+                sleep_ms(1000);
                 restart_pico();
                 sleep_ms(100);
                 return true;
@@ -513,14 +518,22 @@ class ShutdownHelper {
 
         static void emergency_shutdown() {
             uint32_t ready_us = prepare_for_shutdown();
+            LEDHelper::blink_status_led(1);
             shutdown();
             uint32_t now_us = time_us_32();
             do {
                 sleep_ms(10);
                 now_us = time_us_32();
-            } while(now_us - last_replay_ts_us < 15'000'000); // wait 15 seconds
+            } while(now_us - ready_us < 15'000'000); // wait 15 seconds
+            LEDHelper::blink_status_led(7);
+            sleep_ms(1000);
             restart_pico();
             sleep_ms(100);
+        }
+
+        static void initialize() {
+            int rc = init_shutdown_gpio();
+            hard_assert(rc == PICO_OK);
         }
 };
 
@@ -540,6 +553,8 @@ int main()
     LEDHelper::initialize();
     LEDHelper::blink_status_led(1);
     while (WAIT_FOR_USB_STUDIO_ON_STARTUP && !stdio_usb_connected()) { sleep_ms(10); } // wait for monitor to connect
+
+    ShutdownHelper::initialize();
 
     voltage_reader::initialize_module();
     bool low_battery = shutdown_if_battery_empty();

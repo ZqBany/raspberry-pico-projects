@@ -62,9 +62,19 @@ The following files are required on the SD card for system feedback:
 Raspberry Pi Pico (Battery or USB Powered)
 │
 ├── Battery Holder 3xAA:  
-│   ├── Vcc (red) -> power switch -> VSYS + Audio Amplifier
-│   ├── Gnd (black) -> Pico ground [PIN 38] + Audio Amplifier
-│
+│   ├── Vcc (red) -> POLOLU 2808 VIN [PIN VIN]
+│   ├── Gnd (black) -> POLOLU 2808 GROUND [PIN GND]
+|
+|
+├── POLOLU 2808 Mini Pushbutton Power Switch:  
+│   ├── VIN -> Battery Vcc (red)
+│   ├── GND -> Battery Gnd (black)
+│   ├── A -> Button #3 (red) V
+│   ├── GND -> Button #3 (red) G
+│   ├── OFF -> GPIO5 [PIN 7]
+│   ├── VOUT -> PICO VSYS [PIN 39] + Audio Amplifier [V(in)]
+│   ├── GND -> PICO GND [PIN 38] + Audio Amplifier [GND]
+|
 │
 ├── Button #1 (blue):  
 │   ├── V -> WAGO 221-415 -> 3V3(OUT) [PIN 36]
@@ -75,8 +85,8 @@ Raspberry Pi Pico (Battery or USB Powered)
 │   ├── G -> GPIO15 [PIN 20]
 │
 ├── Button #3 (red):  
-│   ├── V -> WAGO 221-415 -> 3V3(OUT) [PIN 36]
-│   ├── G -> GPIO20 [PIN 26]
+│   ├── V -> POLOLU 2808 A [PIN A]
+│   ├── G -> POLOLU 2808 GROUND [PIN GND]
 │
 │
 ├── LED #1 (green):  
@@ -108,12 +118,8 @@ Raspberry Pi Pico (Battery or USB Powered)
     ├── LRC → GPIO27 [PIN 32]
     ├── BCLK → GPIO26 [PIN 31]
     ├── DIN → GPIO28 [PIN 34]
-    ├── SD → via voltage divider
-    │    │── 100kΩ resistor -> GPIO21 [PIN 27]
-    │    │── 22kΩ resistor -> Any Pico GND [in my case PIN 28]
-    │
-    ├── GND → Battery - (black)
-    ├── V(in) → Battery + (red)
+    ├── GND →  POLOLU 2808 GND [PIN GND]
+    ├── V(in) → POLOLU 2808 VOUT [PIN VOUT]
     │
     └── Speaker:
         ├── + → Micro JST 1.25MM Red
@@ -124,7 +130,7 @@ Raspberry Pi Pico (Battery or USB Powered)
 
 ### 1. 3D Printing
 Print the following parts. Most parts do not require supports unless noted:
-*   **Core Bottom:** Requires tree supports. Its recommended to paint black reflectance sensor back with permanent marker through mounting hole after print.
+*   **Core Bottom:** Requires tree supports. Its recommended to paint black reflectance sensor back with permanent marker through mounting hole after print. ![Reflectance sensor back paint](child-boombox/docs/3d_print/paint_reflectance_sensor_back.jpg)
 *   **Core Top:** Requires normal supports.
 *   **LED Holder:** Print 2x.
 *   **Push Button Cover:** Print 3x (ideally in Red, Yellow, and Blue).
@@ -150,22 +156,12 @@ Note: At low voltages system becomes unstable. That's why there is check of batt
 ---
 
 ## Known Issues
-- **Hardware:** Missing place for POLOLU-2808
 - **Logs:** SD card log rotation is currently inconsistent.
 
 ---
 
 ## TODO
-
-- Add power switch on battery input - POLOLU-2808
-- connect battery + to POLOLU-2808 [PIN VIN]
-- connect POLOLU-2808 [PIN VOUT] to PICO [PIN VSYS] + Audio Amplifier [PIN Vin]
-- connect POLOLU-2808 [PIN GND] to Pico ground [PIN 38] + Audio Amplifier [PIN GND]
-- disconnect Button #3 (red) from PICO
-- figure diffrent way of handling old button 3 STOP playing track function 
-- connect POLULU-2808 [PIN A] through momentary switch [Button #3 (red)] to ground for on-only operation
-- connect free PICO GPIO f.e. GPIO20 [PIN 26] to POLOLU-2808 [PIN OFF] for shutoff
-- add software handling instead of dormant mode - a high pulse [PIN 26] to shutoff power
+- Fix audio buffer that is left after interrupting audio play via card removal (next audio like bye msg starts with leftover)
 
 ---
 
