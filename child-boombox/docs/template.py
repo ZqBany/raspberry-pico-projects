@@ -18,6 +18,8 @@ from gimpfu import *
 # import os
 # os.chdir("SCRIPT_DIRECTORY")
 # execfile("./template.py")
+#
+# NOTE: yt-dlp now needs javascript runtime installed like Deno - copy deno.exe next to yt-dlp.exe
 
 template_filename = "Card_stickers_A4_300dpi_template.xcf"
 thumbnails_x_columns = [1, 614, 1231, 1843]
@@ -230,15 +232,19 @@ def process_song(image, song_idx, author, title, youtube_id):
         if existing_filename:
             result = "Skip download - file already exists [{0}]".format(existing_filename)
         else:
-            result = subprocess.check_output(['./audio_cards/yt-dlp.exe',
+            yt_cmd_args = ['./audio_cards/yt-dlp.exe',
                                      '--extract-audio',
                                      '--audio-format', 'wav',
                                      '--postprocessor-args', "ffmpeg:-ar 44100 -ac 2 -c:a pcm_s16le -metadata IART='{0}' -metadata INAM='{1}' -metadata ICMT='{2}'".format(replace_diacritics(author), replace_diacritics(title), youtube_id),
                                      '--output', "./audio_cards/audio_files/{0} - {1}.%(ext)s".format(replace_diacritics(author), replace_diacritics(title)),
                                      '--ffmpeg-location', ffmpeg_base,
-                                     "https://www.youtube.com/watch?v={0}".format(youtube_id)])
+                                     "https://www.youtube.com/watch?v={0}".format(youtube_id)]
+            print(yt_cmd_args)
+            result = subprocess.check_output(yt_cmd_args, stderr=subprocess.STDOUT)
             time.sleep(30)
     except subprocess.CalledProcessError as exc:
+        print("Subprocess Failed with exit code {0}:".format(exc.returncode))
+        print(exc.output)
         result = exc.output
 
     print(result)
